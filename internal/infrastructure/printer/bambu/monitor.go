@@ -62,6 +62,8 @@ type printTelemetry struct {
 		GcodeState      string `json:"gcode_state"`
 		McPercent       int    `json:"mc_percent"`
 		McRemainingTime int    `json:"mc_remaining_time"`
+		LayerNum        int    `json:"layer_num"`
+		TotalLayerNum   int    `json:"total_layer_num"`
 		SubtaskID       string `json:"subtask_id"`
 		SubtaskName     string `json:"subtask_name"`
 		TaskID          string `json:"task_id"`
@@ -423,6 +425,8 @@ func snapshotFromTelemetry(state printTelemetry) (printjobusecase.BambuSnapshot,
 		Progress:       float64(print.McPercent),
 		Status:         status,
 		RemainingMin:   print.McRemainingTime,
+		LayerCurrent:   print.LayerNum,
+		LayerTotal:     print.TotalLayerNum,
 		MaterialHint:   material,
 		ColorHint:      color,
 		BrandHint:      brand,
@@ -435,6 +439,8 @@ func trayHints(print struct {
 	GcodeState      string `json:"gcode_state"`
 	McPercent       int    `json:"mc_percent"`
 	McRemainingTime int    `json:"mc_remaining_time"`
+	LayerNum        int    `json:"layer_num"`
+	TotalLayerNum   int    `json:"total_layer_num"`
 	SubtaskID       string `json:"subtask_id"`
 	SubtaskName     string `json:"subtask_name"`
 	TaskID          string `json:"task_id"`

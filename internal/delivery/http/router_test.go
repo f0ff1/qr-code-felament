@@ -100,6 +100,25 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 	if !strings.Contains(page, "780 г") {
 		t.Fatalf("rendered page should show future remaining from DB, got: %s", page)
 	}
+
+	atStart := spoolCurrentDisplayRemaining(spool, []printjobdomain.PrintJob{{
+		SpoolID:         spool.ID,
+		Status:          printjobdomain.StatusPrinting,
+		Progress:        0,
+		EstimatedWeight: 220,
+	}})
+	if atStart != 1000 {
+		t.Fatalf("current remaining at 0%% = %d, want 1000", atStart)
+	}
+	atEnd := spoolCurrentDisplayRemaining(spool, []printjobdomain.PrintJob{{
+		SpoolID:         spool.ID,
+		Status:          printjobdomain.StatusPrinting,
+		Progress:        100,
+		EstimatedWeight: 220,
+	}})
+	if atEnd != 780 {
+		t.Fatalf("current remaining at 100%% = %d, want 780", atEnd)
+	}
 	if !strings.Contains(page, `href="https://example.com/"`) {
 		t.Fatalf("rendered page should link home to public origin, got: %s", page)
 	}

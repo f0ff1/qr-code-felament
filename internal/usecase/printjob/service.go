@@ -3,6 +3,7 @@ package printjob
 import (
 	"context"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 	printjobdomain "filamenttracker/internal/domain/printjob"
 	productdomain "filamenttracker/internal/domain/product"
 	spooldomain "filamenttracker/internal/domain/spool"
+	"filamenttracker/internal/usecase/pricing"
 
 	"github.com/google/uuid"
 )
@@ -36,6 +38,8 @@ type Service struct {
 type ProductRepository interface {
 	GetByID(ctx context.Context, id uuid.UUID) (productdomain.Product, error)
 	List(ctx context.Context) ([]productdomain.Product, error)
+	Create(ctx context.Context, p productdomain.Product) error
+	Update(ctx context.Context, p productdomain.Product) error
 }
 
 type PrinterRepository interface {
@@ -43,15 +47,18 @@ type PrinterRepository interface {
 }
 
 type BambuSnapshot struct {
-	ExternalTaskID  string
-	FileName        string
-	Progress        float64
-	Status          printjobdomain.Status
-	RemainingMin    int
-	EstimatedWeight int
-	MaterialHint    string
-	ColorHint       string
-	BrandHint       string
+	ExternalTaskID       string
+	FileName             string
+	Progress             float64
+	Status               printjobdomain.Status
+	RemainingMin         int
+	EstimatedDurationSec int
+	EstimatedWeight      int
+	LayerCurrent         int
+	LayerTotal           int
+	MaterialHint         string
+	ColorHint            string
+	BrandHint            string
 }
 
 func NewService(repo PrintJobRepository, spoolRepo spooldomain.Repository, productRepo ProductRepository, printerRepo PrinterRepository) *Service {
@@ -117,7 +124,12 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 	}
 
 	changed := false
-	if snap.Progress > existing.Progress {
+	if existing.Source == printjobdomain.SourceBambu {
+		if math.Abs(snap.Progress-existing.Progress) >= 0.1 {
+			existing.Progress = snap.Progress
+			changed = true
+		}
+	} else if snap.Progress > existing.Progress {
 		existing.Progress = snap.Progress
 		changed = true
 	}
@@ -125,12 +137,21 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 		existing.FileName = snap.FileName
 		changed = true
 	}
-	if snap.EstimatedWeight > 0 && existing.EstimatedWeight == 0 {
-		existing.EstimatedWeight = snap.EstimatedWeight
+	if weightChanged, weightErr := s.applyJobWeight(ctx, &existing, snap.EstimatedWeight); weightErr != nil {
+		return printjobdomain.PrintJob{}, created, weightErr
+	} else if weightChanged {
+		changed = true
+	}
+	if layersChanged := applyLayers(&existing, snap); layersChanged {
+		changed = true
+	}
+	if timingChanged := applyTiming(&existing, snap); timingChanged {
+		changed = true
+	}
+	if productSynced := s.syncLinkedProduct(ctx, &existing, snap); productSynced {
 		changed = true
 	}
 
-	prevStatus := existing.Status
 	switch snap.Status {
 	case printjobdomain.StatusPreparing, printjobdomain.StatusPrinting, printjobdomain.StatusPaused, printjobdomain.StatusQueued:
 		if existing.Status != snap.Status && !isTerminal(existing.Status) {
@@ -170,31 +191,172 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 		}
 	}
 
-	_ = prevStatus
 	return existing, created, nil
 }
 
+func applyTiming(job *printjobdomain.PrintJob, snap BambuSnapshot) bool {
+	changed := false
+	remaining := snap.RemainingMin
+	if remaining < 0 {
+		remaining = 0
+	}
+	if isTerminal(snap.Status) {
+		remaining = 0
+	}
+	if remaining != job.RemainingMinutes {
+		job.RemainingMinutes = remaining
+		changed = true
+	}
+
+	durationSec := snap.EstimatedDurationSec
+	if durationSec <= 0 && remaining > 0 {
+		durationSec = pricing.EstimateTotalMinutes(remaining, snap.Progress) * 60
+	}
+	if durationSec > 0 && (job.EstimatedDurationSec == 0 || absInt(durationSec-job.EstimatedDurationSec) >= 30) {
+		// Prefer longer/more complete estimates once known; allow refine within ±30s noise filter.
+		if job.EstimatedDurationSec == 0 || durationSec > job.EstimatedDurationSec || absInt(durationSec-job.EstimatedDurationSec) >= 60 {
+			job.EstimatedDurationSec = durationSec
+			changed = true
+		}
+	}
+	return changed
+}
+
+func applyLayers(job *printjobdomain.PrintJob, snap BambuSnapshot) bool {
+	changed := false
+	layerCurrent := snap.LayerCurrent
+	layerTotal := snap.LayerTotal
+	if layerTotal <= 0 && job.LayerTotal > 0 {
+		layerTotal = job.LayerTotal
+	}
+	if layerCurrent <= 0 && layerTotal > 0 && snap.Progress > 0 {
+		layerCurrent = int(math.Round(snap.Progress / 100.0 * float64(layerTotal)))
+		if layerCurrent < 1 && snap.Progress > 0 {
+			layerCurrent = 1
+		}
+		if layerCurrent > layerTotal {
+			layerCurrent = layerTotal
+		}
+	}
+	if isTerminal(snap.Status) && layerTotal > 0 {
+		layerCurrent = layerTotal
+	}
+	if layerCurrent != job.LayerCurrent {
+		job.LayerCurrent = layerCurrent
+		changed = true
+	}
+	if layerTotal != job.LayerTotal {
+		job.LayerTotal = layerTotal
+		changed = true
+	}
+	return changed
+}
+
+func (s *Service) applyJobWeight(ctx context.Context, job *printjobdomain.PrintJob, newWeight int) (bool, error) {
+	if newWeight <= 0 {
+		return false, nil
+	}
+	if absInt(newWeight-job.EstimatedWeight) < 1 {
+		return false, nil
+	}
+	oldWeight := job.EstimatedWeight
+	if oldWeight <= 0 {
+		oldWeight = job.ConsumedWeight
+	}
+
+	if !job.IsDraft && job.SpoolID != uuid.Nil {
+		delta := newWeight - oldWeight
+		if delta > 0 {
+			spoolEntity, err := s.spoolRepo.GetByID(ctx, job.SpoolID)
+			if err != nil {
+				return false, err
+			}
+			if err := s.reserveFilament(ctx, &spoolEntity, delta); err != nil {
+				return false, err
+			}
+			job.ConsumedWeight = newWeight
+		} else if delta < 0 {
+			if err := s.refundFilament(ctx, job.SpoolID, -delta); err != nil {
+				return false, err
+			}
+			job.ConsumedWeight = newWeight
+		}
+	}
+
+	job.EstimatedWeight = newWeight
+	if job.ConsumedWeight == 0 && !job.IsDraft && job.SpoolID != uuid.Nil {
+		job.ConsumedWeight = newWeight
+	}
+	return true, nil
+}
+
+func absInt(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
 func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Printer, snap BambuSnapshot) (printjobdomain.PrintJob, error) {
-	productID, spoolID, estimated, draft := s.matchResources(ctx, printer, snap)
+	productID, spoolID, matchedWeight, draft := s.matchResources(ctx, printer, snap)
+	// Prefer Bambu-reported filament usage; fall back to matched product, then time heuristic.
+	estimated := snap.EstimatedWeight
+	if estimated <= 0 {
+		estimated = matchedWeight
+	}
 	if estimated <= 0 {
 		estimated = estimateWeight(snap.RemainingMin, snap.Progress)
 	}
+	if productID == uuid.Nil {
+		createdProduct, err := s.autoCreateProduct(ctx, snap, spoolID, estimated)
+		if err != nil {
+			return printjobdomain.PrintJob{}, err
+		}
+		productID = createdProduct.ID
+		if createdProduct.EstimatedWeight > 0 {
+			estimated = createdProduct.EstimatedWeight
+		}
+		// Product exists; consume filament once spool is matched.
+		if spoolID != uuid.Nil {
+			draft = false
+		}
+	}
+
+	durationSec := snap.EstimatedDurationSec
+	if durationSec <= 0 && snap.RemainingMin > 0 {
+		durationSec = pricing.EstimateTotalMinutes(snap.RemainingMin, snap.Progress) * 60
+	}
+
+	layerCurrent, layerTotal := snap.LayerCurrent, snap.LayerTotal
+	if layerCurrent <= 0 && layerTotal > 0 && snap.Progress > 0 {
+		layerCurrent = int(math.Round(snap.Progress / 100.0 * float64(layerTotal)))
+		if layerCurrent < 1 {
+			layerCurrent = 1
+		}
+		if layerCurrent > layerTotal {
+			layerCurrent = layerTotal
+		}
+	}
 
 	job := printjobdomain.PrintJob{
-		ID:              uuid.New(),
-		PrinterID:       printer.ID,
-		ProductID:       productID,
-		SpoolID:         spoolID,
-		Status:          snap.Status,
-		Source:          printjobdomain.SourceBambu,
-		ExternalTaskID:  snap.ExternalTaskID,
-		FileName:        snap.FileName,
-		IsDraft:         draft,
-		Progress:        snap.Progress,
-		StartedAt:       time.Now(),
-		EstimatedWeight: estimated,
-		CreatedAt:       time.Now(),
-		UpdatedAt:       time.Now(),
+		ID:                   uuid.New(),
+		PrinterID:            printer.ID,
+		ProductID:            productID,
+		SpoolID:              spoolID,
+		Status:               snap.Status,
+		Source:               printjobdomain.SourceBambu,
+		ExternalTaskID:       snap.ExternalTaskID,
+		FileName:             snap.FileName,
+		IsDraft:              draft,
+		Progress:             snap.Progress,
+		RemainingMinutes:     snap.RemainingMin,
+		EstimatedDurationSec: durationSec,
+		LayerCurrent:         layerCurrent,
+		LayerTotal:           layerTotal,
+		StartedAt:            time.Now(),
+		EstimatedWeight:      estimated,
+		CreatedAt:            time.Now(),
+		UpdatedAt:            time.Now(),
 	}
 	if job.Status == "" || job.Status == printjobdomain.StatusQueued {
 		job.Status = printjobdomain.StatusPrinting
@@ -219,6 +381,115 @@ func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Pri
 		return printjobdomain.PrintJob{}, err
 	}
 	return job, nil
+}
+
+func productDisplayName(fileName string) string {
+	name := normalizeName(fileName)
+	if name == "" || name == "unknown" {
+		return "Печать Bambu"
+	}
+	parts := strings.Fields(name)
+	for i, part := range parts {
+		if part == "" {
+			continue
+		}
+		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+	}
+	return strings.Join(parts, " ")
+}
+
+func (s *Service) autoCreateProduct(ctx context.Context, snap BambuSnapshot, spoolID uuid.UUID, estimated int) (productdomain.Product, error) {
+	material, _ := parseFilamentHint(snap.MaterialHint, snap.BrandHint)
+	if material == "" {
+		material = "PLA"
+	}
+	durationSec := snap.EstimatedDurationSec
+	if durationSec <= 0 && snap.RemainingMin > 0 {
+		durationSec = pricing.EstimateTotalMinutes(snap.RemainingMin, snap.Progress) * 60
+	}
+	if durationSec <= 0 {
+		durationSec = 3600
+	}
+	if estimated <= 0 {
+		estimated = estimateWeight(snap.RemainingMin, snap.Progress)
+	}
+
+	pricePerKg := 0.0
+	if spoolID != uuid.Nil {
+		if spoolEntity, err := s.spoolRepo.GetByID(ctx, spoolID); err == nil {
+			pricePerKg = spoolEntity.Price
+		}
+	}
+	hours := float64(durationSec) / 3600.0
+	price := pricing.ProductCost(estimated, hours, pricePerKg, false)
+
+	desc := "Автоматически из Bambu Cloud"
+	if snap.FileName != "" {
+		desc = "Автоматически из Bambu: " + snap.FileName
+	}
+	product := productdomain.NewProduct(
+		productDisplayName(snap.FileName),
+		desc,
+		material,
+		estimated,
+		time.Duration(durationSec)*time.Second,
+		price,
+	)
+	if err := s.productRepo.Create(ctx, product); err != nil {
+		return productdomain.Product{}, err
+	}
+	return product, nil
+}
+
+func (s *Service) syncLinkedProduct(ctx context.Context, job *printjobdomain.PrintJob, snap BambuSnapshot) bool {
+	if job.ProductID == uuid.Nil {
+		return false
+	}
+	product, err := s.productRepo.GetByID(ctx, job.ProductID)
+	if err != nil {
+		return false
+	}
+	changed := false
+	autoManaged := strings.HasPrefix(product.Description, "Автоматически")
+
+	if job.EstimatedWeight > 0 && product.EstimatedWeight != job.EstimatedWeight && (autoManaged || product.EstimatedWeight == 0) {
+		product.EstimatedWeight = job.EstimatedWeight
+		changed = true
+	}
+	durationSec := job.EstimatedDurationSec
+	if durationSec <= 0 && job.RemainingMinutes > 0 {
+		durationSec = pricing.EstimateTotalMinutes(job.RemainingMinutes, job.Progress) * 60
+	}
+	if durationSec > 0 {
+		currentSec := int(product.EstimatedPrintTime.Seconds())
+		if currentSec == 0 || (autoManaged && absInt(durationSec-currentSec) >= 60) {
+			product.EstimatedPrintTime = time.Duration(durationSec) * time.Second
+			changed = true
+		}
+	}
+	if snap.FileName != "" && autoManaged {
+		name := productDisplayName(snap.FileName)
+		if name != "" && product.Name != name {
+			product.Name = name
+			changed = true
+		}
+	}
+
+	if changed {
+		pricePerKg := 0.0
+		if job.SpoolID != uuid.Nil {
+			if spoolEntity, err := s.spoolRepo.GetByID(ctx, job.SpoolID); err == nil {
+				pricePerKg = spoolEntity.Price
+			}
+		}
+		hours := product.EstimatedPrintTime.Hours()
+		product.Price = pricing.ProductCost(product.EstimatedWeight, hours, pricePerKg, false)
+		product.UpdatedAt = time.Now()
+		if err := s.productRepo.Update(ctx, product); err != nil {
+			return false
+		}
+	}
+	return false
 }
 
 func (s *Service) ConfirmDraft(ctx context.Context, jobID, productID, spoolID uuid.UUID) (printjobdomain.PrintJob, error) {

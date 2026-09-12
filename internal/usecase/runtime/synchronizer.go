@@ -64,6 +64,10 @@ func (s *Synchronizer) Sync(ctx context.Context) error {
 		if job.Status != printjobdomain.StatusPrinting {
 			continue
 		}
+		// Bambu jobs carry live % / remaining time from the printer — do not overwrite with wall-clock estimates.
+		if job.Source == printjobdomain.SourceBambu {
+			continue
+		}
 		product, ok := productCache[job.ProductID]
 		if !ok {
 			product, err = s.products.GetByID(ctx, job.ProductID)
@@ -119,7 +123,7 @@ func (s *Synchronizer) syncPrinters(ctx context.Context, jobs []printjobdomain.P
 			if job.PrinterID != printer.ID {
 				continue
 			}
-			if job.Status == printjobdomain.StatusPrinting || job.Status == printjobdomain.StatusQueued {
+			if job.Status == printjobdomain.StatusPrinting || job.Status == printjobdomain.StatusQueued || job.Status == printjobdomain.StatusPreparing {
 				status = printerdomain.StatusPrinting
 				break
 			}

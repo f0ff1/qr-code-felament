@@ -101,6 +101,9 @@ function getSpoolStatus(spool) {
 function normalizeSpool(spool) {
   const remaining = Number(spool.remaining_weight ?? spool.remaining ?? 0);
   const initial = Number(spool.initial_weight ?? spool.initial ?? 0);
+  const currentRemaining = spool.current_remaining != null
+    ? Number(spool.current_remaining)
+    : null;
 
   return {
     id: spool.id,
@@ -108,6 +111,7 @@ function normalizeSpool(spool) {
     color: spool.color,
     manufacturer: spool.manufacturer,
     remaining,
+    currentRemaining,
     initial,
     price: Number(spool.price ?? 0),
     status: 'available',
@@ -167,6 +171,10 @@ function normalizeJob(job) {
     fileName: job.file_name ?? '',
     isDraft: Boolean(job.is_draft),
     estimatedWeight: Number(job.estimated_weight ?? 0),
+    remainingMinutes: Number(job.remaining_minutes ?? 0),
+    estimatedDurationSec: Number(job.estimated_duration_sec ?? 0),
+    layerCurrent: Number(job.layer_current ?? 0),
+    layerTotal: Number(job.layer_total ?? 0),
   };
 }
 
@@ -219,8 +227,13 @@ function getEffectiveJobStatus(job) {
 function getJobProgress(job) {
   if (!job) return 0;
 
-  if (!['printing', 'paused'].includes(job.status)) {
+  if (!['printing', 'paused', 'preparing'].includes(job.status)) {
     return job.status === 'completed' ? 100 : Number(job.progress ?? 0);
+  }
+
+  // Trust printer-reported progress for Bambu jobs (and preparing stage).
+  if (job.source === 'bambu' || job.status === 'preparing') {
+    return Math.min(100, Math.max(0, Number(job.progress ?? 0)));
   }
 
   const product = state.products.find((item) => item.id === job.productId);
@@ -236,29 +249,56 @@ function getJobProgress(job) {
   return Math.min(100, Math.max(0, progress));
 }
 
+function getJobTimeLabel(job) {
+  if (!job) return '0 мин';
+  if (Number(job.remainingMinutes) > 0 && ['printing', 'paused', 'preparing', 'draft'].includes(job.status)) {
+    return `осталось ${formatDuration(Number(job.remainingMinutes) * 60000)}`;
+  }
+  if (Number(job.estimatedDurationSec) > 0) {
+    return formatDuration(Number(job.estimatedDurationSec) * 1000);
+  }
+  const product = state.products.find((item) => item.id === job.productId);
+  return formatDuration(parseDurationToMs(product?.estimatedPrintTime || '0m'));
+}
+
 function getJobRemainingEstimate(job) {
+  if (Number(job?.estimatedWeight) > 0) {
+    return Number(job.estimatedWeight);
+  }
   const product = state.products.find((item) => item.id === job.productId);
   return Number(product?.estimatedWeight ?? 0);
 }
 
 function getSpoolCurrentDisplay(spool) {
+  if (spool.currentRemaining != null && Number.isFinite(Number(spool.currentRemaining))) {
+    return Math.max(0, Number(spool.currentRemaining));
+  }
   const activeJobs = state.jobs.filter((job) => {
     if (String(job.spoolId) !== String(spool.id)) return false;
-    return ['printing', 'paused'].includes(getEffectiveJobStatus(job));
+    return ['printing', 'paused', 'preparing', 'queued'].includes(getEffectiveJobStatus(job));
   });
   const futureRemaining = Number(spool.remaining ?? 0);
-  const consumedFromJobs = activeJobs.reduce((total, job) => {
+  const notYetUsed = activeJobs.reduce((total, job) => {
     const weight = getJobRemainingEstimate(job);
     const progress = getJobProgress(job) / 100;
     return total + weight * (1 - progress);
   }, 0);
-  return Math.max(0, futureRemaining + consumedFromJobs);
+  return Math.max(0, futureRemaining + notYetUsed);
+}
+
+function getJobLayerLabel(job) {
+  const total = Number(job?.layerTotal ?? 0);
+  if (total <= 0) return '';
+  const current = Math.max(0, Number(job?.layerCurrent ?? 0));
+  return `слой ${current} из ${total}`;
 }
 
 function refreshDerivedState() {
   let completedNow = false;
   state.jobs.forEach((job) => {
     if (!isActiveJobStatus(job.status)) return;
+    // Bambu completion comes from the printer/monitor, not client-side ETA.
+    if (job.source === 'bambu') return;
     if (getJobProgress(job) < 100) return;
     job.status = 'completed';
     job.progress = 100;
@@ -472,12 +512,13 @@ function renderOverview() {
         const status = getEffectiveJobStatus(job);
         const progress = status === 'completed' ? 100 : getJobProgress(job);
         const product = state.products.find((item) => item.id === job.productId);
-        const estimated = product?.estimatedPrintTime || '0m';
+        const title = job.fileName || product?.name || job.product;
+        const layerLabel = getJobLayerLabel(job);
         return `
           <div class="overview-item">
             <div>
               <strong>Задача ${job.id.slice(0, 8)}</strong>
-              <span>Печать • ${product?.name || job.product} • ${formatDuration(parseDurationToMs(estimated))}</span>
+              <span>Печать • ${title} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
             </div>
             <div class="overview-meta">
               <span>${status === 'completed' ? '100%' : `${Math.round(progress)}%`}</span>
@@ -641,13 +682,13 @@ function renderJobs() {
       const actionLabel = isPaused ? 'Продолжить' : 'Приостановить';
       const progress = isCompleted ? 100 : Math.round(getJobProgress(job));
       const product = state.products.find((item) => item.id === job.productId);
-      const estimated = product?.estimatedPrintTime || '0m';
       const title = job.fileName || product?.name || job.product;
+      const layerLabel = getJobLayerLabel(job);
       return `
         <div class="job-item">
           <div class="job-title">
             <strong>${isDraft ? 'Черновик' : 'Задача'} ${job.id.slice(0, 8)}</strong>
-            <span>${title} • Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${formatDuration(parseDurationToMs(estimated))}</span>
+            <span>${title} • Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}</span>
           </div>
           <div class="job-body">
             ${isCompleted ? '' : `

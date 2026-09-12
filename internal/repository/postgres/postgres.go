@@ -160,6 +160,10 @@ func Migrate(db *sql.DB) error {
 		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS external_task_id TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS file_name TEXT NOT NULL DEFAULT ''`,
 		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS is_draft BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS remaining_minutes INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS estimated_duration_sec INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS layer_current INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS layer_total INTEGER NOT NULL DEFAULT 0`,
 		`CREATE INDEX IF NOT EXISTS idx_print_jobs_external_task ON print_jobs (printer_id, external_task_id)`,
 		`CREATE TABLE IF NOT EXISTS bambu_cloud_accounts (
 			id UUID PRIMARY KEY,
@@ -476,8 +480,8 @@ func (r *PrintJobRepository) Create(ctx context.Context, j printjobdomain.PrintJ
 	if source == "" {
 		source = string(printjobdomain.SourceManual)
 	}
-	_, err := r.db.ExecContext(ctx, `INSERT INTO print_jobs (id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, source, external_task_id, file_name, is_draft, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
-		j.ID, j.PrinterID, nullableUUID(j.ProductID), nullableUUID(j.SpoolID), string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, source, j.ExternalTaskID, j.FileName, j.IsDraft, j.CreatedAt, j.UpdatedAt)
+	_, err := r.db.ExecContext(ctx, `INSERT INTO print_jobs (id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, source, external_task_id, file_name, is_draft, remaining_minutes, estimated_duration_sec, layer_current, layer_total, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`,
+		j.ID, j.PrinterID, nullableUUID(j.ProductID), nullableUUID(j.SpoolID), string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, source, j.ExternalTaskID, j.FileName, j.IsDraft, j.RemainingMinutes, j.EstimatedDurationSec, j.LayerCurrent, j.LayerTotal, j.CreatedAt, j.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("%w: print job create: %v", domain.ErrConflict, err)
 	}
@@ -490,7 +494,7 @@ func scanPrintJob(scan func(dest ...any) error) (printjobdomain.PrintJob, error)
 	var productID, spoolID sql.NullString
 	var source, externalTaskID, fileName string
 	var isDraft bool
-	if err := scan(&j.ID, &j.PrinterID, &productID, &spoolID, &j.Status, &j.Progress, &j.StartedAt, &finishedAt, &j.EstimatedWeight, &j.ConsumedWeight, &source, &externalTaskID, &fileName, &isDraft, &j.CreatedAt, &j.UpdatedAt); err != nil {
+	if err := scan(&j.ID, &j.PrinterID, &productID, &spoolID, &j.Status, &j.Progress, &j.StartedAt, &finishedAt, &j.EstimatedWeight, &j.ConsumedWeight, &source, &externalTaskID, &fileName, &isDraft, &j.RemainingMinutes, &j.EstimatedDurationSec, &j.LayerCurrent, &j.LayerTotal, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		return printjobdomain.PrintJob{}, err
 	}
 	j.ProductID = scanOptionalUUID(productID)
@@ -508,7 +512,7 @@ func scanPrintJob(scan func(dest ...any) error) (printjobdomain.PrintJob, error)
 	return j, nil
 }
 
-const printJobSelect = `SELECT id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, COALESCE(source,'manual'), COALESCE(external_task_id,''), COALESCE(file_name,''), COALESCE(is_draft,false), created_at, updated_at FROM print_jobs`
+const printJobSelect = `SELECT id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, COALESCE(source,'manual'), COALESCE(external_task_id,''), COALESCE(file_name,''), COALESCE(is_draft,false), COALESCE(remaining_minutes,0), COALESCE(estimated_duration_sec,0), COALESCE(layer_current,0), COALESCE(layer_total,0), created_at, updated_at FROM print_jobs`
 
 func (r *PrintJobRepository) GetByID(ctx context.Context, id uuid.UUID) (printjobdomain.PrintJob, error) {
 	row := r.db.QueryRowContext(ctx, printJobSelect+` WHERE id = $1`, id)
@@ -560,8 +564,8 @@ func (r *PrintJobRepository) Update(ctx context.Context, j printjobdomain.PrintJ
 	if source == "" {
 		source = string(printjobdomain.SourceManual)
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE print_jobs SET printer_id=$1, product_id=$2, spool_id=$3, status=$4, progress=$5, started_at=$6, finished_at=$7, estimated_weight=$8, consumed_weight=$9, source=$10, external_task_id=$11, file_name=$12, is_draft=$13, updated_at=$14 WHERE id=$15`,
-		j.PrinterID, nullableUUID(j.ProductID), nullableUUID(j.SpoolID), string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, source, j.ExternalTaskID, j.FileName, j.IsDraft, j.UpdatedAt, j.ID)
+	result, err := r.db.ExecContext(ctx, `UPDATE print_jobs SET printer_id=$1, product_id=$2, spool_id=$3, status=$4, progress=$5, started_at=$6, finished_at=$7, estimated_weight=$8, consumed_weight=$9, source=$10, external_task_id=$11, file_name=$12, is_draft=$13, remaining_minutes=$14, estimated_duration_sec=$15, layer_current=$16, layer_total=$17, updated_at=$18 WHERE id=$19`,
+		j.PrinterID, nullableUUID(j.ProductID), nullableUUID(j.SpoolID), string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, source, j.ExternalTaskID, j.FileName, j.IsDraft, j.RemainingMinutes, j.EstimatedDurationSec, j.LayerCurrent, j.LayerTotal, j.UpdatedAt, j.ID)
 	if err != nil {
 		return err
 	}

@@ -56,24 +56,47 @@ func TestNormalizeCloudRegion(t *testing.T) {
 	}
 }
 
-func TestMergeCloudSnapshotsPrefersRestActive(t *testing.T) {
+func TestMergeCloudSnapshotsPrefersMqttProgressAndRemaining(t *testing.T) {
 	rest := printjobusecase.BambuSnapshot{
-		ExternalTaskID: "cloud-1",
-		FileName:       "from-rest",
-		Status:         printjobdomain.StatusPrinting,
-		Progress:       1,
+		ExternalTaskID:       "cloud-1",
+		FileName:             "from-rest",
+		Status:               printjobdomain.StatusPrinting,
+		Progress:             0,
+		EstimatedDurationSec: 7200,
+		RemainingMin:         120,
 	}
 	mqtt := printjobusecase.BambuSnapshot{
 		ExternalTaskID: "99",
 		FileName:       "from-mqtt",
 		Status:         printjobdomain.StatusQueued,
 		Progress:       42,
+		RemainingMin:   70,
 	}
-	snap, active := mergeCloudSnapshots(rest, true, mqtt, false)
+	snap, active := mergeCloudSnapshots(rest, true, mqtt, true)
 	if !active || snap.Status != printjobdomain.StatusPrinting {
 		t.Fatalf("expected active printing, got %s/%v", snap.Status, active)
 	}
-	if snap.Progress != 42 || snap.FileName != "from-mqtt" {
-		t.Fatalf("expected mqtt progress/name, got %+v", snap)
+	if snap.Progress != 42 || snap.RemainingMin != 70 || snap.FileName != "from-mqtt" {
+		t.Fatalf("expected mqtt live timing, got %+v", snap)
+	}
+	if snap.EstimatedDurationSec != 7200 {
+		t.Fatalf("should keep cloud costTime duration, got %d", snap.EstimatedDurationSec)
+	}
+}
+
+func TestMergeCloudSnapshotsMergesLayers(t *testing.T) {
+	rest := printjobusecase.BambuSnapshot{
+		Status:          printjobdomain.StatusPrinting,
+		EstimatedWeight: 180,
+	}
+	mqtt := printjobusecase.BambuSnapshot{
+		Status:       printjobdomain.StatusPrinting,
+		Progress:     20,
+		LayerCurrent: 18,
+		LayerTotal:   90,
+	}
+	snap, active := mergeCloudSnapshots(rest, true, mqtt, true)
+	if !active || snap.LayerCurrent != 18 || snap.LayerTotal != 90 || snap.EstimatedWeight != 180 {
+		t.Fatalf("unexpected merge: %+v active=%v", snap, active)
 	}
 }

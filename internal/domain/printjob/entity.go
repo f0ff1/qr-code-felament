@@ -27,22 +27,26 @@ const (
 )
 
 type PrintJob struct {
-	ID              uuid.UUID
-	PrinterID       uuid.UUID
-	ProductID       uuid.UUID
-	SpoolID         uuid.UUID
-	Status          Status
-	Source          Source
-	ExternalTaskID  string
-	FileName        string
-	IsDraft         bool
-	Progress        float64
-	StartedAt       time.Time
-	FinishedAt      *time.Time
-	EstimatedWeight int
-	ConsumedWeight  int
-	CreatedAt       time.Time
-	UpdatedAt       time.Time
+	ID                   uuid.UUID
+	PrinterID            uuid.UUID
+	ProductID            uuid.UUID
+	SpoolID              uuid.UUID
+	Status               Status
+	Source               Source
+	ExternalTaskID       string
+	FileName             string
+	IsDraft              bool
+	Progress             float64
+	RemainingMinutes     int
+	EstimatedDurationSec int
+	LayerCurrent         int
+	LayerTotal           int
+	StartedAt            time.Time
+	FinishedAt           *time.Time
+	EstimatedWeight      int
+	ConsumedWeight       int
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 
 func NewPrintJob(printerID, productID, spoolID uuid.UUID, estimatedWeight int) PrintJob {
@@ -102,5 +106,5 @@ func (j *PrintJob) Cancel() {
 }
 
 func IsActive(status Status) bool {
-	return status == StatusQueued || status == StatusPrinting || status == StatusPaused || status == StatusDraft
+	return status == StatusQueued || status == StatusPreparing || status == StatusPrinting || status == StatusPaused || status == StatusDraft
 }

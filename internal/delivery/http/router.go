@@ -53,23 +53,35 @@ func cleanPublicToken(raw string) string {
 }
 
 func spoolCurrentDisplayRemaining(spoolEntity spooldomain.Spool, jobs []printjobdomain.PrintJob) int {
-	currentRemaining := spoolEntity.CurrentWeight
-	consumedFromJobs := 0
+	// DB current_weight is "future remaining" after full job reserve at print start.
+	// Live remaining = future + not-yet-extruded portion of reserved filament.
+	futureRemaining := spoolEntity.CurrentWeight
+	notYetUsed := 0
 	for _, job := range jobs {
 		if job.SpoolID != spoolEntity.ID || !isActivePrintJobStatus(job.Status) {
 			continue
 		}
-		progress := max(0.0, job.Progress)
+		weight := job.EstimatedWeight
+		if weight <= 0 {
+			weight = job.ConsumedWeight
+		}
+		if weight <= 0 {
+			continue
+		}
+		progress := job.Progress
+		if progress < 0 {
+			progress = 0
+		}
 		if progress > 100 {
 			progress = 100
 		}
-		consumedFromJobs += int(float64(job.EstimatedWeight) * (progress / 100.0))
+		notYetUsed += int(float64(weight) * (1.0 - progress/100.0))
 	}
-	return max(0, currentRemaining+consumedFromJobs)
+	return max(0, futureRemaining+notYetUsed)
 }
 
 func isActivePrintJobStatus(status printjobdomain.Status) bool {
-	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused
+	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPreparing || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusDraft
 }
 
 func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, projectedRemaining int, baseURL string) string {
@@ -383,17 +395,19 @@ func NewRouter() http.Handler {
 				return
 			}
 			payload := make([]map[string]any, 0, len(spools))
+			jobs, _ := printJobService.List(context.Background())
 			for _, spool := range spools {
 				payload = append(payload, map[string]any{
-					"id":               spool.ID.String(),
-					"material":         string(spool.Material),
-					"color":            spool.Color,
-					"manufacturer":     spool.Manufacturer,
-					"initial_weight":   spool.InitialWeight,
-					"remaining_weight": spool.CurrentWeight,
-					"price":            spool.Price,
-					"status":           string(spool.Status),
-					"qr_token":         spool.QRToken,
+					"id":                spool.ID.String(),
+					"material":          string(spool.Material),
+					"color":             spool.Color,
+					"manufacturer":      spool.Manufacturer,
+					"initial_weight":    spool.InitialWeight,
+					"remaining_weight":  spool.CurrentWeight,
+					"current_remaining": spoolCurrentDisplayRemaining(spool, jobs),
+					"price":             spool.Price,
+					"status":            string(spool.Status),
+					"qr_token":          spool.QRToken,
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -715,18 +729,22 @@ func NewRouter() http.Handler {
 			payload := make([]map[string]any, 0, len(jobs))
 			for _, job := range jobs {
 				item := map[string]any{
-					"id":               job.ID.String(),
-					"printer_id":       job.PrinterID.String(),
-					"status":           string(job.Status),
-					"progress":         job.Progress,
-					"started_at":       job.StartedAt.Format(time.RFC3339),
-					"finished_at":      job.FinishedAt,
-					"source":           string(job.Source),
-					"file_name":        job.FileName,
-					"is_draft":         job.IsDraft,
-					"external_task_id": job.ExternalTaskID,
-					"estimated_weight": job.EstimatedWeight,
-					"consumed_weight":  job.ConsumedWeight,
+					"id":                     job.ID.String(),
+					"printer_id":             job.PrinterID.String(),
+					"status":                 string(job.Status),
+					"progress":               job.Progress,
+					"started_at":             job.StartedAt.Format(time.RFC3339),
+					"finished_at":            job.FinishedAt,
+					"source":                 string(job.Source),
+					"file_name":              job.FileName,
+					"is_draft":               job.IsDraft,
+					"external_task_id":       job.ExternalTaskID,
+					"estimated_weight":       job.EstimatedWeight,
+					"consumed_weight":        job.ConsumedWeight,
+					"remaining_minutes":      job.RemainingMinutes,
+					"estimated_duration_sec": job.EstimatedDurationSec,
+					"layer_current":          job.LayerCurrent,
+					"layer_total":            job.LayerTotal,
 				}
 				if job.ProductID != uuid.Nil {
 					item["product_id"] = job.ProductID.String()

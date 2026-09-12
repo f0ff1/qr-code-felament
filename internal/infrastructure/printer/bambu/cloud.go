@@ -157,12 +157,26 @@ func snapshotFromCloudData(data bambicloud.Data, weightHint int, materialHint, c
 		color = fmt.Sprintf("%02X%02X%02X", data.VtTray.TrayColor.R, data.VtTray.TrayColor.G, data.VtTray.TrayColor.B)
 	}
 
+	layerTotal := data.TotalLayerNumber
+	layerCurrent := 0
+	if layerTotal > 0 && data.PrintPercentDone > 0 {
+		layerCurrent = int(math.Round(float64(data.PrintPercentDone) / 100.0 * float64(layerTotal)))
+		if layerCurrent < 1 {
+			layerCurrent = 1
+		}
+		if layerCurrent > layerTotal {
+			layerCurrent = layerTotal
+		}
+	}
+
 	return printjobusecase.BambuSnapshot{
 		ExternalTaskID:  taskID,
 		FileName:        fileName,
 		Progress:        float64(data.PrintPercentDone),
 		Status:          status,
 		RemainingMin:    data.RemainingPrintTime,
+		LayerCurrent:    layerCurrent,
+		LayerTotal:      layerTotal,
 		MaterialHint:    material,
 		ColorHint:       color,
 		BrandHint:       brand,
@@ -178,6 +192,7 @@ func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTask
 	weight := 0
 	material := ""
 	color := ""
+	costTimeSec := 0
 
 	if tasks != nil {
 		for _, hit := range tasks.Hits {
@@ -192,6 +207,9 @@ func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTask
 			}
 			if hit.Weight > 0 {
 				weight = int(math.Round(hit.Weight))
+			}
+			if hit.CostTime > 0 {
+				costTimeSec = hit.CostTime
 			}
 			for _, ams := range hit.AMSDetailMapping {
 				if material == "" && ams.FilamentType != "" {
@@ -214,21 +232,27 @@ func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTask
 		fileName = device.DevID
 	}
 
+	// REST list has no live %, leave 0 until MQTT fills it. Fake 1% corrupted ETA math.
 	progress := 0.0
-	if status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused {
-		progress = 1
-	} else if status == printjobdomain.StatusCompleted {
+	if status == printjobdomain.StatusCompleted {
 		progress = 100
 	}
 
+	remainingMin := 0
+	if costTimeSec > 0 && progress < 100 {
+		remainingMin = int(math.Round(float64(costTimeSec) / 60.0))
+	}
+
 	return printjobusecase.BambuSnapshot{
-		ExternalTaskID:  taskID,
-		FileName:        fileName,
-		Progress:        progress,
-		Status:          status,
-		MaterialHint:    material,
-		ColorHint:       color,
-		EstimatedWeight: weight,
+		ExternalTaskID:       taskID,
+		FileName:             fileName,
+		Progress:             progress,
+		Status:               status,
+		RemainingMin:         remainingMin,
+		EstimatedDurationSec: costTimeSec,
+		MaterialHint:         material,
+		ColorHint:            color,
+		EstimatedWeight:      weight,
 	}, active
 }
 
@@ -242,11 +266,22 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	if mqtt.ExternalTaskID != "" {
 		snap.ExternalTaskID = mqtt.ExternalTaskID
 	}
-	if mqtt.Progress > snap.Progress {
+	if mqttActive {
+		snap.Progress = mqtt.Progress
+	} else if mqtt.Progress > snap.Progress {
 		snap.Progress = mqtt.Progress
 	}
 	if mqtt.RemainingMin > 0 {
 		snap.RemainingMin = mqtt.RemainingMin
+	} else if snap.EstimatedDurationSec > 0 && snap.Progress > 0 && snap.Progress < 100 {
+		snap.RemainingMin = int(math.Round(float64(snap.EstimatedDurationSec) / 60.0 * (1.0 - snap.Progress/100.0)))
+	}
+	if mqtt.RemainingMin > 0 && snap.EstimatedDurationSec == 0 {
+		totalMin := mqtt.RemainingMin
+		if mqtt.Progress > 1 && mqtt.Progress < 100 {
+			totalMin = int(math.Round(float64(mqtt.RemainingMin) / (1.0 - mqtt.Progress/100.0)))
+		}
+		snap.EstimatedDurationSec = totalMin * 60
 	}
 	if mqtt.MaterialHint != "" {
 		snap.MaterialHint = mqtt.MaterialHint
@@ -259,6 +294,20 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	}
 	if mqtt.EstimatedWeight > 0 {
 		snap.EstimatedWeight = mqtt.EstimatedWeight
+	}
+	if mqtt.LayerTotal > 0 {
+		snap.LayerTotal = mqtt.LayerTotal
+	}
+	if mqtt.LayerCurrent > 0 {
+		snap.LayerCurrent = mqtt.LayerCurrent
+	} else if snap.LayerTotal > 0 && snap.Progress > 0 {
+		snap.LayerCurrent = int(math.Round(snap.Progress / 100.0 * float64(snap.LayerTotal)))
+		if snap.LayerCurrent < 1 {
+			snap.LayerCurrent = 1
+		}
+		if snap.LayerCurrent > snap.LayerTotal {
+			snap.LayerCurrent = snap.LayerTotal
+		}
 	}
 
 	// Cloud REST uses ACTIVE; MQTT uses RUNNING. Prefer whichever is active.

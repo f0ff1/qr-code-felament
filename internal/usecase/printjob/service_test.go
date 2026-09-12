@@ -36,6 +36,106 @@ func TestSyncFromBambuCreatesDraftWhenUnmatched(t *testing.T) {
 	if !created || !job.IsDraft {
 		t.Fatalf("expected draft job, got created=%v draft=%v", created, job.IsDraft)
 	}
+	if job.ProductID.String() == "00000000-0000-0000-0000-000000000000" {
+		t.Fatal("expected auto-created product even for unmatched spool")
+	}
+	if job.RemainingMinutes != 90 {
+		t.Fatalf("remaining minutes = %d, want 90", job.RemainingMinutes)
+	}
+	products, _ := productRepo.List(context.Background())
+	if len(products) != 1 {
+		t.Fatalf("products = %d, want 1 auto product", len(products))
+	}
+}
+
+func TestSyncFromBambuAutoProductPriceUsesSpool(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 40)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:       "task-auto-product",
+		FileName:             "bracket_v2.gcode",
+		Progress:             20,
+		Status:               printjobdomain.StatusPrinting,
+		RemainingMin:         48,
+		EstimatedDurationSec: 3600,
+		EstimatedWeight:      100,
+		MaterialHint:         "Generic PLA",
+		ColorHint:            "Charcoal",
+		BrandHint:            "Generic",
+	})
+	if err != nil {
+		t.Fatalf("SyncFromBambu: %v", err)
+	}
+	if !created || job.IsDraft || job.ProductID.String() == "00000000-0000-0000-0000-000000000000" {
+		t.Fatalf("expected linked auto product, got draft=%v product=%s", job.IsDraft, job.ProductID)
+	}
+	product, err := productRepo.GetByID(context.Background(), job.ProductID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if product.Name == "" || product.Price <= 0 {
+		t.Fatalf("auto product missing name/price: %+v", product)
+	}
+	if product.EstimatedWeight != 100 {
+		t.Fatalf("weight = %d, want 100", product.EstimatedWeight)
+	}
+}
+
+func TestSyncFromBambuUpdatesProgressAndRemaining(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+
+	_, _, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID: "task-progress",
+		FileName:       "cube.gcode",
+		Progress:       40,
+		Status:         printjobdomain.StatusPrinting,
+		RemainingMin:   60,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID: "task-progress",
+		FileName:       "cube.gcode",
+		Progress:       35,
+		Status:         printjobdomain.StatusPaused,
+		RemainingMin:   66,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created {
+		t.Fatal("should update existing job")
+	}
+	if job.Progress != 35 {
+		t.Fatalf("progress = %v, want 35 (printer trust)", job.Progress)
+	}
+	if job.RemainingMinutes != 66 {
+		t.Fatalf("remaining = %d, want 66", job.RemainingMinutes)
+	}
+	if job.Status != printjobdomain.StatusDraft && job.Status != printjobdomain.StatusPaused {
+		// unmatched spool => draft; status may stay draft while paused snap arrives
+		if job.IsDraft && job.Status != printjobdomain.StatusDraft {
+			t.Fatalf("unexpected status %s", job.Status)
+		}
+	}
 }
 
 func TestConfirmDraftReservesFilament(t *testing.T) {
@@ -135,6 +235,73 @@ func TestSyncFromBambuSkipsWrongManufacturer(t *testing.T) {
 	}
 	if !job.IsDraft {
 		t.Fatalf("eSUN spool must not match Generic brand, got draft=%v", job.IsDraft)
+	}
+}
+
+func TestSyncFromBambuReservesWeightAndUpdatesLayers(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 40)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-weight-layers",
+		FileName:        "tower.gcode",
+		Progress:        10,
+		Status:          printjobdomain.StatusPrinting,
+		RemainingMin:    90,
+		EstimatedWeight: 200,
+		LayerCurrent:    9,
+		LayerTotal:      90,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created || job.IsDraft {
+		t.Fatalf("expected reserved non-draft job, got draft=%v", job.IsDraft)
+	}
+	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 800 {
+		t.Fatalf("future remaining = %d, want 800", updatedSpool.CurrentWeight)
+	}
+	if job.LayerCurrent != 9 || job.LayerTotal != 90 {
+		t.Fatalf("layers = %d/%d, want 9/90", job.LayerCurrent, job.LayerTotal)
+	}
+
+	job, _, err = service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-weight-layers",
+		FileName:        "tower.gcode",
+		Progress:        50,
+		Status:          printjobdomain.StatusPrinting,
+		EstimatedWeight: 240,
+		LayerCurrent:    45,
+		LayerTotal:      90,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedSpool, _ = spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 760 {
+		t.Fatalf("future remaining after weight bump = %d, want 760", updatedSpool.CurrentWeight)
+	}
+	if job.EstimatedWeight != 240 || job.LayerCurrent != 45 {
+		t.Fatalf("job weight/layers = %d %d/%d", job.EstimatedWeight, job.LayerCurrent, job.LayerTotal)
+	}
+	product, _ := productRepo.GetByID(context.Background(), job.ProductID)
+	if product.EstimatedWeight != 240 {
+		t.Fatalf("auto product weight = %d, want 240", product.EstimatedWeight)
 	}
 }
 
