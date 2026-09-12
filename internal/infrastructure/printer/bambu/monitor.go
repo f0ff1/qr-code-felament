@@ -272,6 +272,14 @@ func (m *Monitor) pollCloudPrinter(ctx context.Context, p printerdomain.Printer)
 		if dataErr == nil {
 			if data, ok := dataMap[device.DevID]; ok {
 				mqttSnap, mqttActive := snapshotFromCloudData(data, restSnap.EstimatedWeight, restSnap.MaterialHint, restSnap.ColorHint)
+				if layerCurrent, layerTotal, layerOK := layerFromCloudPool(session.pool, device.DevID); layerOK {
+					if layerCurrent > 0 {
+						mqttSnap.LayerCurrent = layerCurrent
+					}
+					if layerTotal > 0 {
+						mqttSnap.LayerTotal = layerTotal
+					}
+				}
 				if mqttSnap.ExternalTaskID == "" {
 					mqttSnap.ExternalTaskID = restSnap.ExternalTaskID
 				}
@@ -515,16 +523,19 @@ func trayHints(print struct {
 }
 
 func mapGcodeState(raw string) (printjobdomain.Status, bool) {
-	switch bambulabs.GcodeState(strings.ToUpper(strings.TrimSpace(raw))) {
-	case bambulabs.PREPARE:
+	upper := strings.ToUpper(strings.TrimSpace(raw))
+	switch {
+	case strings.Contains(upper, "CALIB"):
+		return printjobdomain.StatusCalibrating, true
+	case bambulabs.GcodeState(upper) == bambulabs.PREPARE:
 		return printjobdomain.StatusPreparing, true
-	case bambulabs.RUNNING:
+	case bambulabs.GcodeState(upper) == bambulabs.RUNNING:
 		return printjobdomain.StatusPrinting, true
-	case bambulabs.PAUSE:
+	case bambulabs.GcodeState(upper) == bambulabs.PAUSE:
 		return printjobdomain.StatusPaused, true
-	case bambulabs.FINISH:
+	case bambulabs.GcodeState(upper) == bambulabs.FINISH:
 		return printjobdomain.StatusCompleted, true
-	case bambulabs.FAILED:
+	case bambulabs.GcodeState(upper) == bambulabs.FAILED:
 		return printjobdomain.StatusFailed, true
 	default:
 		return printjobdomain.StatusQueued, false
@@ -539,7 +550,7 @@ func mapPrinterStatus(status printjobdomain.Status, active bool) printerdomain.P
 		return printerdomain.StatusIdle
 	}
 	switch status {
-	case printjobdomain.StatusPreparing:
+	case printjobdomain.StatusPreparing, printjobdomain.StatusCalibrating:
 		return printerdomain.StatusPreparing
 	case printjobdomain.StatusPrinting, printjobdomain.StatusQueued, printjobdomain.StatusDraft:
 		return printerdomain.StatusPrinting

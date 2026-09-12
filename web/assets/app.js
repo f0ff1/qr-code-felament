@@ -85,7 +85,7 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
 }
 
 function isActiveJobStatus(status) {
-  return ['preparing', 'printing', 'paused', 'queued', 'draft'].includes(String(status ?? '').toLowerCase());
+  return ['preparing', 'calibrating', 'printing', 'paused', 'queued', 'draft'].includes(String(status ?? '').toLowerCase());
 }
 
 function getSpoolStatus(spool) {
@@ -152,6 +152,8 @@ function normalizeProduct(product) {
     estimatedWeight: Number(product.estimated_weight ?? product.estimatedWeight ?? 0),
     estimatedPrintTime: product.estimated_print_time ?? product.estimatedPrintTime ?? '0s',
     price: Number(product.price ?? 0),
+    priceLegal: Number(product.price_legal ?? product.priceLegal ?? 0),
+    billingMode: String(product.billing_mode ?? product.billingMode ?? 'person'),
   };
 }
 
@@ -215,11 +217,13 @@ function buildEstimatedPrintTime(hours, minutes) {
 
 function getEffectiveJobStatus(job) {
   if (!job) return 'queued';
-  if (job.isDraft || job.status === 'draft') {
-    return 'draft';
-  }
   if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
     return job.status;
+  }
+
+  // Bambu: trust Cloud status as-is; isDraft is only "нужна катушка", not a print status.
+  if (job.source === 'bambu') {
+    return job.status === 'draft' ? 'printing' : job.status;
   }
 
   const progress = getJobProgress(job);
@@ -227,19 +231,19 @@ function getEffectiveJobStatus(job) {
     return 'completed';
   }
 
-  return job.status;
+  return job.status === 'draft' ? 'printing' : job.status;
 }
 
 function getJobProgress(job) {
   if (!job) return 0;
 
-  if (!['printing', 'paused', 'preparing'].includes(job.status)) {
-    return job.status === 'completed' ? 100 : Number(job.progress ?? 0);
+  // Trust Cloud/printer % for Bambu jobs — never invent from wall-clock.
+  if (job.source === 'bambu') {
+    return Math.min(100, Math.max(0, Number(job.progress ?? 0)));
   }
 
-  // Trust printer-reported progress for Bambu jobs (and preparing stage).
-  if (job.source === 'bambu' || job.status === 'preparing') {
-    return Math.min(100, Math.max(0, Number(job.progress ?? 0)));
+  if (!['printing', 'paused', 'preparing', 'calibrating'].includes(job.status)) {
+    return job.status === 'completed' ? 100 : Number(job.progress ?? 0);
   }
 
   const product = state.products.find((item) => item.id === job.productId);
@@ -257,7 +261,7 @@ function getJobProgress(job) {
 
 function getJobTimeLabel(job) {
   if (!job) return '0 мин';
-  if (Number(job.remainingMinutes) > 0 && ['printing', 'paused', 'preparing', 'draft'].includes(job.status)) {
+  if (Number(job.remainingMinutes) > 0 && ['printing', 'paused', 'preparing', 'calibrating'].includes(job.status)) {
     return `осталось ${formatDuration(Number(job.remainingMinutes) * 60000)}`;
   }
   if (Number(job.estimatedDurationSec) > 0) {
@@ -282,7 +286,7 @@ function jobReservesSpool(job, spoolId) {
   if (!job || String(job.spoolId ?? '') !== String(spoolId ?? '')) return false;
   // Use raw status: getEffectiveJobStatus() may mark a live print as completed at 100%.
   const status = String(job.status ?? '').toLowerCase();
-  return ['printing', 'paused', 'preparing', 'queued', 'draft'].includes(status);
+  return ['printing', 'paused', 'preparing', 'calibrating', 'queued'].includes(status);
 }
 
 function getJobPrintProgressPercent(job) {
@@ -291,7 +295,7 @@ function getJobPrintProgressPercent(job) {
   if (!Number.isFinite(progress) || progress < 0) progress = 0;
   if (progress > 100) progress = 100;
   const status = String(job?.status ?? '').toLowerCase();
-  const live = ['printing', 'paused', 'preparing', 'queued', 'draft'].includes(status);
+  const live = ['printing', 'paused', 'preparing', 'calibrating', 'queued'].includes(status);
   // Stale Cloud MQTT can report 100% while the job is still live with ETA left.
   if (live && Number(job?.remainingMinutes) > 0 && progress >= 100) {
     progress = 99;
@@ -349,14 +353,17 @@ function updateClock() {
 
 function translateStatus(status) {
   const map = {
-    draft: 'черновик',
+    draft: 'печать',
     available: 'достаточно',
     low: 'заканчивается',
     in_use: 'в работе',
     preparing: 'подготовка',
+    calibrating: 'калибровка',
     printing: 'печать',
     paused: 'пауза',
     completed: 'завершено',
+    failed: 'ошибка',
+    cancelled: 'отменено',
     idle: 'простаивает',
     offline: 'офлайн',
     queued: 'в очереди',
@@ -367,6 +374,19 @@ function translateStatus(status) {
   };
 
   return map[status] || status;
+}
+
+function formatProductPrice(product) {
+  const mode = String(product?.billingMode || 'person');
+  const person = Number(product?.price ?? 0);
+  const legal = Number(product?.priceLegal ?? 0);
+  if (mode === 'both') {
+    return `Для физ. лица: ${person.toFixed(2)} ₽ · Для юр. лица: ${legal.toFixed(2)} ₽`;
+  }
+  if (mode === 'legal') {
+    return `Для юр. лица: ${legal.toFixed(2)} ₽`;
+  }
+  return `Для физ. лица: ${person.toFixed(2)} ₽`;
 }
 
 async function loadData({ soft = false } = {}) {
@@ -544,8 +564,8 @@ function renderOverview() {
         return `
           <div class="overview-item">
             <div>
-              <strong>Задача ${job.id.slice(0, 8)}</strong>
-              <span>Печать • ${title} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
+              <strong>${title}</strong>
+              <span>${translateStatus(status)}${job.isDraft ? ' • нужна катушка' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
             </div>
             <div class="overview-meta">
               <span>${status === 'completed' ? '100%' : `${Math.round(progress)}%`}</span>
@@ -678,7 +698,7 @@ function renderProducts() {
         <strong>${product.name}</strong>
         <span>${product.material} • ${product.estimatedWeight} г • ${product.estimatedPrintTime}</span>
         <span>${product.description}</span>
-        <span>Себестоимость: ${Number(product.price ?? 0).toFixed(2)} ₽</span>
+        <span>${formatProductPrice(product)}</span>
         <div class="card-actions top-gap">
           <button class="mini-btn delete" data-delete-type="product" data-delete-id="${product.id}" aria-label="Удалить продукт" title="Удалить">×</button>
         </div>
@@ -704,7 +724,7 @@ function renderJobs() {
     .map((job) => {
       const effectiveStatus = getEffectiveJobStatus(job);
       const isCompleted = effectiveStatus === 'completed';
-      const isDraft = job.isDraft || effectiveStatus === 'draft';
+      const needsSpool = Boolean(job.isDraft);
       const isPaused = job.status === 'paused' && !isCompleted;
       const actionLabel = isPaused ? 'Продолжить' : 'Приостановить';
       const progress = isCompleted ? 100 : Math.round(getJobProgress(job));
@@ -714,8 +734,8 @@ function renderJobs() {
       return `
         <div class="job-item">
           <div class="job-title">
-            <strong>${isDraft ? 'Черновик' : 'Задача'} ${job.id.slice(0, 8)}</strong>
-            <span>${title} • Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}</span>
+            <strong>${title}</strong>
+            <span>Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}</span>
           </div>
           <div class="job-body">
             ${isCompleted ? '' : `
@@ -727,9 +747,9 @@ function renderJobs() {
             `}
           </div>
           <div class="card-actions">
-            <span class="job-tag ${isDraft ? 'draft' : (isCompleted ? 'completed' : effectiveStatus)}">${isDraft ? 'черновик' : translateStatus(isCompleted ? 'completed' : effectiveStatus)}</span>
-            ${isDraft ? `<button class="mini-btn" data-confirm-draft-id="${job.id}">Подтвердить</button>` : ''}
-            ${isCompleted || isDraft ? '' : `<button class="mini-btn" data-job-toggle-id="${job.id}" data-job-toggle-action="${isPaused ? 'resume' : 'pause'}">${actionLabel}</button>`}
+            <span class="job-tag ${isCompleted ? 'completed' : effectiveStatus}">${translateStatus(isCompleted ? 'completed' : effectiveStatus)}</span>
+            ${needsSpool ? `<span class="job-tag draft">катушка?</span><button class="mini-btn" data-confirm-draft-id="${job.id}">Привязать</button>` : ''}
+            ${isCompleted || needsSpool ? '' : `<button class="mini-btn" data-job-toggle-id="${job.id}" data-job-toggle-action="${isPaused ? 'resume' : 'pause'}">${actionLabel}</button>`}
             <button class="mini-btn delete" data-delete-type="job" data-delete-id="${job.id}" aria-label="Удалить задачу" title="Удалить">×</button>
           </div>
         </div>
@@ -777,10 +797,112 @@ function updateProductCostPreview() {
   if (!refs.productForm || !refs.productCostPreview) return;
 
   const cost = calculateProductCost(refs.productForm);
-  refs.productCostPreview.textContent = `${cost.toFixed(2)} ₽`;
+  const legalChecked = Boolean(refs.productForm.querySelector('.billing-toggle[value="legal"]')?.checked);
+  const label = legalChecked ? 'Для юр. лица' : 'Для физ. лица';
+  refs.productCostPreview.textContent = `${label}: ${cost.toFixed(2)} ₽`;
 
   const hiddenPrice = refs.productForm.querySelector('input[name="price"]');
   if (hiddenPrice) hiddenPrice.value = String(cost);
+}
+
+function fillSelectOptions(select, options, preferred = '') {
+  if (!select) return;
+  const current = select.value || preferred;
+  select.innerHTML = options.map((value) => `<option value="${value}">${value}</option>`).join('');
+  if (current && options.includes(current)) {
+    select.value = current;
+  } else if (options.length) {
+    select.value = options.includes(preferred) ? preferred : options[0];
+  }
+}
+
+async function loadFilamentCatalog() {
+  try {
+    const catalog = await fetchJSON('/api/filament-catalog');
+    state.filamentCatalog = {
+      brands: Array.isArray(catalog.brands) ? catalog.brands : [],
+      materials: Array.isArray(catalog.materials) ? catalog.materials : [],
+      colors: Array.isArray(catalog.colors) ? catalog.colors : [],
+    };
+    fillSelectOptions(document.getElementById('spoolManufacturer'), state.filamentCatalog.brands, 'Generic');
+    fillSelectOptions(document.getElementById('spoolMaterial'), state.filamentCatalog.materials, 'PLA');
+    fillSelectOptions(document.getElementById('spoolColor'), state.filamentCatalog.colors, 'чёрный');
+  } catch (_error) {
+    // keep empty selects; create will fail validation server-side
+  }
+}
+
+const TOAST_TTL_MS = 60 * 1000;
+const SEEN_TOASTS_KEY = 'filament.seenToasts';
+
+function loadSeenToasts() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(SEEN_TOASTS_KEY) || '{}');
+    const now = Date.now();
+    const fresh = {};
+    Object.entries(raw).forEach(([id, ts]) => {
+      if (now - Number(ts) < 24 * 60 * 60 * 1000) fresh[id] = Number(ts);
+    });
+    localStorage.setItem(SEEN_TOASTS_KEY, JSON.stringify(fresh));
+    return fresh;
+  } catch (_error) {
+    return {};
+  }
+}
+
+function markToastSeen(id) {
+  const seen = loadSeenToasts();
+  seen[id] = Date.now();
+  localStorage.setItem(SEEN_TOASTS_KEY, JSON.stringify(seen));
+}
+
+function shouldToastEvent(evt) {
+  if (!evt?.id) return false;
+  const seen = loadSeenToasts();
+  if (seen[evt.id]) return false;
+  const created = evt.created_at ? Date.parse(evt.created_at) : NaN;
+  if (!Number.isFinite(created)) return false;
+  return Date.now() - created <= TOAST_TTL_MS;
+}
+
+function formatEventTime(iso) {
+  const ts = Date.parse(iso);
+  if (!Number.isFinite(ts)) return '';
+  const ageMin = Math.round((Date.now() - ts) / 60000);
+  if (ageMin < 1) return 'только что';
+  if (ageMin < 60) return `${ageMin} мин назад`;
+  const hours = Math.round(ageMin / 60);
+  if (hours < 24) return `${hours} ч назад`;
+  return new Date(ts).toLocaleString();
+}
+
+async function loadNotificationHistory() {
+  try {
+    const items = await fetchJSON('/api/notifications');
+    if (!Array.isArray(items)) return;
+    state.events = items.slice(0, 12).map((evt) => {
+      const mapped = mapServerEvent(String(evt.type || 'info'), evt.message || 'Событие');
+      return {
+        id: evt.id,
+        type: mapped.level,
+        label: mapped.message,
+        time: formatEventTime(evt.created_at),
+      };
+    });
+    renderActivity();
+  } catch (_error) {
+    // history optional
+  }
+}
+
+function handleServerEvent(data, { allowToast = true } = {}) {
+  const type = String(data.type || 'info');
+  const mapped = mapServerEvent(type, data.message || 'Получено событие');
+  appendActivity(mapped.message, mapped.level, data.id, data.created_at);
+  if (allowToast && (type === 'spool_low' || type === 'print_completed') && shouldToastEvent(data)) {
+    markToastSeen(data.id);
+    showToast(mapped.message, mapped.level, mapped.title);
+  }
 }
 
 function calculateProductCost(form) {
@@ -874,15 +996,15 @@ function notify(message, type = 'info', title = '') {
   showToast(message, type, title);
 }
 
-function appendActivity(message, type = 'info') {
+function appendActivity(message, type = 'info', id = '', createdAt = '') {
   const item = {
-    id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now()),
+    id: id || (globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now())),
     type,
     label: message,
-    time: 'только что',
+    time: createdAt ? formatEventTime(createdAt) : 'только что',
   };
 
-  state.events = [item, ...state.events].slice(0, 8);
+  state.events = [item, ...state.events.filter((entry) => entry.id !== item.id)].slice(0, 12);
   renderActivity();
 }
 
@@ -894,7 +1016,7 @@ function renderActivity() {
     info: '◌',
   };
 
-  const events = state.events.length ? state.events : [{ type: 'info', label: 'Система готова', time: 'только что' }];
+  const events = state.events.length ? state.events : [{ type: 'info', label: 'История пуста', time: '' }];
 
   refs.activityList.innerHTML = events
     .map((entry) => `
@@ -902,7 +1024,7 @@ function renderActivity() {
         <div class="activity-icon">${iconMap[entry.type] || '◌'}</div>
         <div class="activity-copy">
           <strong>${entry.label}</strong>
-          <span>${entry.time}</span>
+          <span>${entry.time || ''}</span>
         </div>
       </li>
     `)
@@ -918,13 +1040,7 @@ function connectEvents() {
   source.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      const type = String(data.type || 'info');
-      const mapped = mapServerEvent(type, data.message || 'Получено событие');
-      if (type === 'spool_low' || type === 'print_completed') {
-        notify(mapped.message, mapped.level, mapped.title);
-      } else {
-        appendActivity(mapped.message, mapped.level);
-      }
+      handleServerEvent(data, { allowToast: true });
     } catch (_error) {
       // ignore malformed payloads
     }
@@ -1205,6 +1321,8 @@ async function createProduct(event) {
     return;
   }
 
+  const legalChecked = Boolean(form.querySelector('.billing-toggle[value="legal"]')?.checked);
+  const billingMode = legalChecked ? 'legal' : 'person';
   const computedPrice = calculateProductCost(form);
   form.price.value = String(computedPrice);
 
@@ -1218,12 +1336,16 @@ async function createProduct(event) {
         material: selectedSpool.material,
         estimatedWeight: Number(form.estimatedWeight.value),
         estimatedPrintTime,
-        price: Number(form.price.value),
+        price: billingMode === 'person' ? computedPrice : 0,
+        priceLegal: billingMode === 'legal' ? computedPrice : 0,
+        billingMode,
       }),
     });
     if (refs.productFormStatus) refs.productFormStatus.textContent = '';
     notify(`Продукт «${result.name}» добавлен`, 'success', 'Продукты');
     form.reset();
+    const personToggle = form.querySelector('.billing-toggle[value="person"]');
+    if (personToggle) personToggle.checked = true;
     if (refs.productCostPreview) refs.productCostPreview.textContent = '0.00 ₽';
     await loadData();
   } catch (error) {
@@ -1348,7 +1470,7 @@ async function confirmDraftJob(jobId) {
     notify('Черновик подтверждён, пластик зарезервирован', 'success', 'Печать');
     await loadData();
   } catch (error) {
-    notify(error.message || 'Не удалось подтвердить черновик', 'error', 'Печать');
+    notify(error.message || 'Не удалось привязать катушку', 'error', 'Печать');
   }
 }
 
@@ -1494,7 +1616,8 @@ function init() {
   bindEvents();
   connectEvents();
   refreshCloudAccountBadge();
-  notify('Система готова', 'success', 'Filament Tracker');
+  loadFilamentCatalog();
+  loadNotificationHistory();
   loadData();
 }
 

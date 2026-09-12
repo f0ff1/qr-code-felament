@@ -19,7 +19,7 @@ func TestProductCreateAndGetByID(t *testing.T) {
 	repo := memory.NewProductRepository()
 	service := NewService(repo)
 
-	p, err := service.Create(context.Background(), "Dragon", "Large decorative vase", "PLA", 180, 4*time.Hour+30*time.Minute, 35.0)
+	p, err := service.Create(context.Background(), "Dragon", "Large decorative vase", "PLA", 180, 4*time.Hour+30*time.Minute, 35.0, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -55,7 +55,7 @@ func TestPrintJobCanStartWhenFilamentIsEnough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -88,7 +88,7 @@ func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -117,7 +117,7 @@ func TestPrintJobStartConsumesFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -158,7 +158,7 @@ func TestPrintJobPauseAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -210,7 +210,7 @@ func TestDeleteUnfinishedJobRestoresFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}

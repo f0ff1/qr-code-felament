@@ -182,22 +182,22 @@
                 <h3>Добавить катушку</h3>
               </div>
 
-              <div class="form-grid">
+                  <div class="form-grid">
                 <label>
                   <span>Материал</span>
-                  <input name="material" type="text" value="PLA" required />
+                  <select name="material" id="spoolMaterial" required></select>
                 </label>
                 <label>
                   <span>Цвет</span>
-                  <input name="color" type="text" value="чёрный" required />
+                  <select name="color" id="spoolColor" required></select>
                 </label>
                 <p class="form-hint form-span-2">
-                  Для матчинга с Bambu Cloud важны: производитель (например Generic), материал (PLA) и цвет (чёрный).
-                  Название катушки на матч не влияет. Charcoal из Cloud = чёрный.
+                  Производитель и тип пластика — как в Bambu Cloud/Studio. Цвет сравнивается с таблицей матчинга
+                  (Charcoal из Cloud = чёрный). Название катушки на матч не влияет.
                 </p>
                 <label>
                   <span>Производитель</span>
-                  <input name="manufacturer" type="text" value="Bambu" required />
+                  <select name="manufacturer" id="spoolManufacturer" required></select>
                 </label>
                 <label>
                   <span>Начальный вес, г</span>

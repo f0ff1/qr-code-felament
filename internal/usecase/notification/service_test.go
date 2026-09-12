@@ -51,3 +51,15 @@ func TestServicePublishDoesNotPanicWhenSubscriberClosed(t *testing.T) {
 		t.Fatalf("len(List()) = %d, want 1", got)
 	}
 }
+
+func TestServiceTTLPrunesOldEvents(t *testing.T) {
+	service := NewService()
+	service.ttl = 50 * time.Millisecond
+	old := service.Publish("old", "old event", nil)
+	time.Sleep(80 * time.Millisecond)
+	service.Publish("new", "new event", nil)
+	items := service.List()
+	if len(items) != 1 || items[0].Type != "new" {
+		t.Fatalf("expected only fresh event, got %+v (old id %s)", items, old.ID)
+	}
+}

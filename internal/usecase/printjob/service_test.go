@@ -7,6 +7,7 @@ import (
 
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
+	productdomain "filamenttracker/internal/domain/product"
 	spooldomain "filamenttracker/internal/domain/spool"
 	"filamenttracker/internal/repository/memory"
 	productusecase "filamenttracker/internal/usecase/product"
@@ -184,11 +185,11 @@ func TestSyncFromBambuUpdatesProgressAndRemaining(t *testing.T) {
 	if job.RemainingMinutes != 66 {
 		t.Fatalf("remaining = %d, want 66", job.RemainingMinutes)
 	}
-	if job.Status != printjobdomain.StatusDraft && job.Status != printjobdomain.StatusPaused {
-		// unmatched spool => draft; status may stay draft while paused snap arrives
-		if job.IsDraft && job.Status != printjobdomain.StatusDraft {
-			t.Fatalf("unexpected status %s", job.Status)
-		}
+	if job.Status != printjobdomain.StatusPaused {
+		t.Fatalf("status = %s, want paused (Cloud status kept even when unmatched)", job.Status)
+	}
+	if !job.IsDraft {
+		t.Fatal("unmatched spool should keep is_draft=true")
 	}
 }
 
@@ -204,7 +205,7 @@ func TestConfirmDraftReservesFilament(t *testing.T) {
 	_ = printerRepo.Create(context.Background(), printer)
 	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "Black", "Bambu", 1000, 30)
 	_ = spoolRepo.Create(context.Background(), spool)
-	product, err := products.Create(context.Background(), "Bracket", "", "PLA", 120, 0, 10)
+	product, err := products.Create(context.Background(), "Bracket", "", "PLA", 120, 0, 10, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -391,6 +392,111 @@ func TestSyncFromBambuDoesNotTreatStale100AsFullyConsumed(t *testing.T) {
 	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
 	if updatedSpool.CurrentWeight != 900 {
 		t.Fatalf("future remaining = %d, want 900", updatedSpool.CurrentWeight)
+	}
+}
+
+func TestApplyLayersDoesNotInventFromProgress(t *testing.T) {
+	job := printjobdomain.PrintJob{LayerTotal: 750}
+	changed := applyLayers(&job, BambuSnapshot{
+		Progress:   2,
+		LayerTotal: 750,
+		Status:     printjobdomain.StatusPrinting,
+	})
+	if job.LayerCurrent != 0 {
+		t.Fatalf("invented layer current=%d from 2%%, want 0", job.LayerCurrent)
+	}
+	if !changed && job.LayerTotal != 750 {
+		t.Fatal("expected total layers to apply")
+	}
+}
+
+func TestEnsureDraftLinkedReservesDefaultSpool(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 40)
+	_ = spoolRepo.Create(context.Background(), spool)
+	printer := printerdomain.NewPrinter("A1", "A1")
+	printer.DefaultSpoolID = spool.ID
+	_ = printerRepo.Create(context.Background(), printer)
+
+	// First sync: no material hints → historically stayed draft with no reserve.
+	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-default-spool",
+		FileName:        "remote.gcode",
+		Progress:        2,
+		Status:          printjobdomain.StatusPrinting,
+		RemainingMin:    100,
+		EstimatedWeight: 150,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !created {
+		t.Fatal("expected created")
+	}
+	if job.IsDraft || job.SpoolID != spool.ID || job.ConsumedWeight != 150 {
+		t.Fatalf("default spool must auto-link+reserve, got draft=%v spool=%s consumed=%d", job.IsDraft, job.SpoolID, job.ConsumedWeight)
+	}
+	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 850 {
+		t.Fatalf("future remaining = %d, want 850", updatedSpool.CurrentWeight)
+	}
+}
+
+func TestSyncFromBambuReservesMissingConsumedWeight(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 40)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, _, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-fix-reserve",
+		FileName:        "box.gcode",
+		Progress:        5,
+		Status:          printjobdomain.StatusPrinting,
+		EstimatedWeight: 120,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Simulate broken state: linked job without spool reservation.
+	job.ConsumedWeight = 0
+	spool.CurrentWeight = 1000
+	_ = spoolRepo.Update(context.Background(), spool)
+	_ = jobRepo.Update(context.Background(), job)
+
+	job, _, err = service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-fix-reserve",
+		FileName:        "box.gcode",
+		Progress:        8,
+		Status:          printjobdomain.StatusPrinting,
+		EstimatedWeight: 120,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.ConsumedWeight != 120 {
+		t.Fatalf("consumed=%d, want 120", job.ConsumedWeight)
+	}
+	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 880 {
+		t.Fatalf("future remaining = %d, want 880", updatedSpool.CurrentWeight)
 	}
 }
 

@@ -14,8 +14,10 @@ import (
 
 	"filamenttracker/internal/bootstrap"
 	"filamenttracker/internal/config"
+	"filamenttracker/internal/domain/filament"
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
+	productdomain "filamenttracker/internal/domain/product"
 	spooldomain "filamenttracker/internal/domain/spool"
 	"filamenttracker/internal/infrastructure/printer/bambu"
 	"filamenttracker/internal/infrastructure/printer/mock"
@@ -85,7 +87,7 @@ func spoolCurrentDisplayRemaining(spoolEntity spooldomain.Spool, jobs []printjob
 }
 
 func isActivePrintJobStatus(status printjobdomain.Status) bool {
-	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPreparing || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusDraft
+	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPreparing || status == printjobdomain.StatusCalibrating || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusDraft
 }
 
 func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, projectedRemaining int, baseURL string) string {
@@ -486,6 +488,22 @@ func NewRouter() http.Handler {
 				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
+			if !filament.IsKnownMaterial(input.Material) {
+				jsonError(w, "некорректный тип пластика — выберите значение из списка Bambu", http.StatusBadRequest)
+				return
+			}
+			if !filament.IsKnownBrand(input.Manufacturer) {
+				jsonError(w, "некорректный производитель — выберите значение из списка Bambu", http.StatusBadRequest)
+				return
+			}
+			if !filament.IsKnownColor(input.Color) {
+				jsonError(w, "некорректный цвет — выберите цвет из таблицы матчинга", http.StatusBadRequest)
+				return
+			}
+			if input.InitialWeight <= 0 || input.Price < 0 {
+				jsonError(w, "некорректный вес или цена", http.StatusBadRequest)
+				return
+			}
 			entity, err := spoolService.Create(context.Background(), spooldomain.Material(input.Material), input.Color, input.Manufacturer, input.InitialWeight, input.Price)
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
@@ -727,6 +745,8 @@ func NewRouter() http.Handler {
 					"estimated_weight":     product.EstimatedWeight,
 					"estimated_print_time": product.EstimatedPrintTime.String(),
 					"price":                product.Price,
+					"price_legal":          product.PriceLegal,
+					"billing_mode":         string(product.BillingMode),
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -739,6 +759,8 @@ func NewRouter() http.Handler {
 				EstimatedWeight    int     `json:"estimatedWeight"`
 				EstimatedPrintTime string  `json:"estimatedPrintTime"`
 				Price              float64 `json:"price"`
+				PriceLegal         float64 `json:"priceLegal"`
+				BillingMode        string  `json:"billingMode"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				jsonError(w, "invalid payload", http.StatusBadRequest)
@@ -749,7 +771,7 @@ func NewRouter() http.Handler {
 				jsonError(w, "invalid duration", http.StatusBadRequest)
 				return
 			}
-			entity, err := productService.Create(context.Background(), input.Name, input.Description, input.Material, input.EstimatedWeight, duration, input.Price)
+			entity, err := productService.Create(context.Background(), input.Name, input.Description, input.Material, input.EstimatedWeight, duration, input.Price, input.PriceLegal, productdomain.BillingMode(input.BillingMode))
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
@@ -1142,6 +1164,37 @@ func NewRouter() http.Handler {
 	})
 
 	mux.Handle("/events", NewSSEHandler(notifier))
+	mux.HandleFunc("/api/notifications", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		items := notifier.ListRecent(50)
+		payload := make([]map[string]any, 0, len(items))
+		for i := len(items) - 1; i >= 0; i-- {
+			evt := items[i]
+			payload = append(payload, map[string]any{
+				"id":         evt.ID,
+				"type":       evt.Type,
+				"message":    evt.Message,
+				"created_at": evt.CreatedAt.UTC().Format(time.RFC3339),
+			})
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(payload)
+	})
+	mux.HandleFunc("/api/filament-catalog", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"brands":     filament.Brands,
+			"materials":  filament.Materials,
+			"colors":     filament.ColorOptions(),
+		})
+	})
 
 	webRoot := filepath.Join(".", "web")
 	mux.Handle("/assets/", http.StripPrefix("/assets/", http.FileServer(http.Dir(filepath.Join(webRoot, "assets")))))
@@ -1186,11 +1239,11 @@ func ensureDemoData(ctx context.Context, spoolService *spoolusecase.Service, pri
 		return
 	}
 
-	productA, err := productService.Create(ctx, "Кронштейн A", "Кронштейн для корпуса", "PLA", 220, 2*time.Hour+30*time.Minute, 19.9)
+	productA, err := productService.Create(ctx, "Кронштейн A", "Кронштейн для корпуса", "PLA", 220, 2*time.Hour+30*time.Minute, 19.9, 0, productdomain.BillingPerson)
 	if err != nil {
 		return
 	}
-	productB, err := productService.Create(ctx, "Корпус B", "Плоский корпус для сборки", "PETG", 310, 3*time.Hour+15*time.Minute, 24.5)
+	productB, err := productService.Create(ctx, "Корпус B", "Плоский корпус для сборки", "PETG", 310, 3*time.Hour+15*time.Minute, 24.5, 0, productdomain.BillingPerson)
 	if err != nil {
 		return
 	}

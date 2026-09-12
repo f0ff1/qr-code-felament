@@ -9,14 +9,16 @@ import (
 type Status string
 
 const (
-	StatusQueued     Status = "queued"
-	StatusPreparing  Status = "preparing"
-	StatusPrinting   Status = "printing"
-	StatusPaused     Status = "paused"
-	StatusCompleted  Status = "completed"
-	StatusFailed     Status = "failed"
-	StatusCancelled  Status = "cancelled"
-	StatusDraft      Status = "draft"
+	StatusQueued      Status = "queued"
+	StatusPreparing   Status = "preparing"
+	StatusCalibrating Status = "calibrating"
+	StatusPrinting    Status = "printing"
+	StatusPaused      Status = "paused"
+	StatusCompleted   Status = "completed"
+	StatusFailed      Status = "failed"
+	StatusCancelled   Status = "cancelled"
+	// StatusDraft is legacy; unmatched Cloud jobs keep real printer status and use IsDraft flag.
+	StatusDraft Status = "draft"
 )
 
 type Source string
@@ -106,5 +108,5 @@ func (j *PrintJob) Cancel() {
 }
 
 func IsActive(status Status) bool {
-	return status == StatusQueued || status == StatusPreparing || status == StatusPrinting || status == StatusPaused || status == StatusDraft
+	return status == StatusQueued || status == StatusPreparing || status == StatusCalibrating || status == StatusPrinting || status == StatusPaused || status == StatusDraft
 }

@@ -164,6 +164,8 @@ func Migrate(db *sql.DB) error {
 		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS estimated_duration_sec INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS layer_current INTEGER NOT NULL DEFAULT 0`,
 		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS layer_total INTEGER NOT NULL DEFAULT 0`,
+		`ALTER TABLE products ADD COLUMN IF NOT EXISTS price_legal DOUBLE PRECISION NOT NULL DEFAULT 0`,
+		`ALTER TABLE products ADD COLUMN IF NOT EXISTS billing_mode TEXT NOT NULL DEFAULT 'person'`,
 		`CREATE INDEX IF NOT EXISTS idx_print_jobs_external_task ON print_jobs (printer_id, external_task_id)`,
 		`CREATE TABLE IF NOT EXISTS bambu_cloud_accounts (
 			id UUID PRIMARY KEY,
@@ -371,7 +373,11 @@ type ProductRepository struct{ db *sql.DB }
 func NewProductRepository(db *sql.DB) *ProductRepository { return &ProductRepository{db: db} }
 
 func (r *ProductRepository) Create(ctx context.Context, p productdomain.Product) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO products (id,name,description,material,estimated_weight,estimated_print_time,price,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`, p.ID, p.Name, p.Description, p.Material, p.EstimatedWeight, p.EstimatedPrintTime.String(), p.Price, p.CreatedAt, p.UpdatedAt)
+	mode := string(p.BillingMode)
+	if mode == "" {
+		mode = string(productdomain.BillingPerson)
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO products (id,name,description,material,estimated_weight,estimated_print_time,price,price_legal,billing_mode,created_at,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, p.ID, p.Name, p.Description, p.Material, p.EstimatedWeight, p.EstimatedPrintTime.String(), p.Price, p.PriceLegal, mode, p.CreatedAt, p.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("%w: product create: %v", domain.ErrConflict, err)
 	}
@@ -381,8 +387,9 @@ func (r *ProductRepository) Create(ctx context.Context, p productdomain.Product)
 func (r *ProductRepository) GetByID(ctx context.Context, id uuid.UUID) (productdomain.Product, error) {
 	var p productdomain.Product
 	var duration string
-	row := r.db.QueryRowContext(ctx, `SELECT id, name, description, material, estimated_weight, estimated_print_time, price, created_at, updated_at FROM products WHERE id = $1`, id)
-	if err := row.Scan(&p.ID, &p.Name, &p.Description, &p.Material, &p.EstimatedWeight, &duration, &p.Price, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	var mode string
+	row := r.db.QueryRowContext(ctx, `SELECT id, name, description, material, estimated_weight, estimated_print_time, price, COALESCE(price_legal,0), COALESCE(billing_mode,'person'), created_at, updated_at FROM products WHERE id = $1`, id)
+	if err := row.Scan(&p.ID, &p.Name, &p.Description, &p.Material, &p.EstimatedWeight, &duration, &p.Price, &p.PriceLegal, &mode, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return productdomain.Product{}, fmt.Errorf("%w: product %s", domain.ErrNotFound, id)
 		}
@@ -393,11 +400,12 @@ func (r *ProductRepository) GetByID(ctx context.Context, id uuid.UUID) (productd
 		return productdomain.Product{}, err
 	}
 	p.EstimatedPrintTime = parsed
+	p.BillingMode = productdomain.BillingMode(mode)
 	return p, nil
 }
 
 func (r *ProductRepository) List(ctx context.Context) ([]productdomain.Product, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, description, material, estimated_weight, estimated_print_time, price, created_at, updated_at FROM products ORDER BY created_at DESC`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, description, material, estimated_weight, estimated_print_time, price, COALESCE(price_legal,0), COALESCE(billing_mode,'person'), created_at, updated_at FROM products ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -406,7 +414,8 @@ func (r *ProductRepository) List(ctx context.Context) ([]productdomain.Product, 
 	for rows.Next() {
 		var p productdomain.Product
 		var duration string
-		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Material, &p.EstimatedWeight, &duration, &p.Price, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var mode string
+		if err := rows.Scan(&p.ID, &p.Name, &p.Description, &p.Material, &p.EstimatedWeight, &duration, &p.Price, &p.PriceLegal, &mode, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
 		}
 		parsed, err := time.ParseDuration(duration)
@@ -414,13 +423,18 @@ func (r *ProductRepository) List(ctx context.Context) ([]productdomain.Product, 
 			return nil, err
 		}
 		p.EstimatedPrintTime = parsed
+		p.BillingMode = productdomain.BillingMode(mode)
 		items = append(items, p)
 	}
 	return items, rows.Err()
 }
 
 func (r *ProductRepository) Update(ctx context.Context, p productdomain.Product) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE products SET name=$1, description=$2, material=$3, estimated_weight=$4, estimated_print_time=$5, price=$6, updated_at=$7 WHERE id=$8`, p.Name, p.Description, p.Material, p.EstimatedWeight, p.EstimatedPrintTime.String(), p.Price, p.UpdatedAt, p.ID)
+	mode := string(p.BillingMode)
+	if mode == "" {
+		mode = string(productdomain.BillingPerson)
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE products SET name=$1, description=$2, material=$3, estimated_weight=$4, estimated_print_time=$5, price=$6, price_legal=$7, billing_mode=$8, updated_at=$9 WHERE id=$10`, p.Name, p.Description, p.Material, p.EstimatedWeight, p.EstimatedPrintTime.String(), p.Price, p.PriceLegal, mode, p.UpdatedAt, p.ID)
 	if err != nil {
 		return err
 	}

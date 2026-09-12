@@ -15,6 +15,7 @@ func TestMapGcodeState(t *testing.T) {
 	}{
 		{"RUNNING", printjobdomain.StatusPrinting, true},
 		{"PREPARE", printjobdomain.StatusPreparing, true},
+		{"CALIBRATING", printjobdomain.StatusCalibrating, true},
 		{"PAUSE", printjobdomain.StatusPaused, true},
 		{"FINISH", printjobdomain.StatusCompleted, true},
 		{"FAILED", printjobdomain.StatusFailed, true},
@@ -118,5 +119,30 @@ func TestMergeCloudSnapshotsMergesLayers(t *testing.T) {
 	snap, active := mergeCloudSnapshots(rest, true, mqtt, true)
 	if !active || snap.LayerCurrent != 18 || snap.LayerTotal != 90 || snap.EstimatedWeight != 180 {
 		t.Fatalf("unexpected merge: %+v active=%v", snap, active)
+	}
+}
+
+func TestMergeCloudSnapshotsDoesNotInventLayersFromProgress(t *testing.T) {
+	rest := printjobusecase.BambuSnapshot{
+		Status:               printjobdomain.StatusPrinting,
+		ExternalTaskID:       "cloud-task-42",
+		EstimatedDurationSec: 3600,
+	}
+	mqtt := printjobusecase.BambuSnapshot{
+		Status:         printjobdomain.StatusPrinting,
+		ExternalTaskID: "cloud-task-99",
+		Progress:       2,
+		LayerTotal:     750,
+		// LayerCurrent intentionally missing — must stay 0, not round(2%*750)=15.
+	}
+	snap, active := mergeCloudSnapshots(rest, true, mqtt, true)
+	if !active {
+		t.Fatal("expected active")
+	}
+	if snap.ExternalTaskID != "cloud-task-42" {
+		t.Fatalf("stable REST task id lost: %s", snap.ExternalTaskID)
+	}
+	if snap.LayerCurrent != 0 || snap.LayerTotal != 750 {
+		t.Fatalf("must not invent layer current from %%, got %d/%d", snap.LayerCurrent, snap.LayerTotal)
 	}
 }

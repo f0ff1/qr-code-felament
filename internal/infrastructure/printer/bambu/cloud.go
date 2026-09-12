@@ -89,11 +89,12 @@ func snapshotFromCloudData(data bambicloud.Data, weightHint int, materialHint, c
 	}
 	fileName = filepath.Base(fileName)
 
+	// Prefer stable cloud-task-* ids so REST/MQTT polls map to the same job.
 	taskID := ""
 	if data.TaskID != 0 {
-		taskID = strconv.Itoa(data.TaskID)
+		taskID = "cloud-task-" + strconv.Itoa(data.TaskID)
 	} else if data.SubtaskID != 0 {
-		taskID = strconv.Itoa(data.SubtaskID)
+		taskID = "cloud-task-" + strconv.Itoa(data.SubtaskID)
 	}
 	if taskID == "" && fileName != "" {
 		taskID = fileName
@@ -116,26 +117,14 @@ func snapshotFromCloudData(data bambicloud.Data, weightHint int, materialHint, c
 		color = fmt.Sprintf("%02X%02X%02X", data.VtTray.TrayColor.R, data.VtTray.TrayColor.G, data.VtTray.TrayColor.B)
 	}
 
-	layerTotal := data.TotalLayerNumber
-	layerCurrent := 0
-	if layerTotal > 0 && data.PrintPercentDone > 0 {
-		layerCurrent = int(math.Round(float64(data.PrintPercentDone) / 100.0 * float64(layerTotal)))
-		if layerCurrent < 1 {
-			layerCurrent = 1
-		}
-		if layerCurrent > layerTotal {
-			layerCurrent = layerTotal
-		}
-	}
-
+	// LayerCurrent is filled from raw MQTT layer_num in monitor (library Data drops it).
 	return printjobusecase.BambuSnapshot{
 		ExternalTaskID:  taskID,
 		FileName:        fileName,
 		Progress:        float64(data.PrintPercentDone),
 		Status:          status,
 		RemainingMin:    data.RemainingPrintTime,
-		LayerCurrent:    layerCurrent,
-		LayerTotal:      layerTotal,
+		LayerTotal:      data.TotalLayerNumber,
 		MaterialHint:    material,
 		ColorHint:       color,
 		BrandHint:       brand,
@@ -225,7 +214,13 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	if mqtt.FileName != "" && mqtt.FileName != "." {
 		snap.FileName = mqtt.FileName
 	}
-	if mqtt.ExternalTaskID != "" {
+	// Keep REST cloud-task-* as the stable job key when present.
+	switch {
+	case strings.HasPrefix(rest.ExternalTaskID, "cloud-task-"):
+		snap.ExternalTaskID = rest.ExternalTaskID
+	case strings.HasPrefix(mqtt.ExternalTaskID, "cloud-task-"):
+		snap.ExternalTaskID = mqtt.ExternalTaskID
+	case mqtt.ExternalTaskID != "":
 		snap.ExternalTaskID = mqtt.ExternalTaskID
 	}
 
@@ -284,15 +279,6 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	if mqtt.EstimatedWeight > 0 {
 		snap.EstimatedWeight = mqtt.EstimatedWeight
 	}
-	if snap.LayerCurrent <= 0 && snap.LayerTotal > 0 && snap.Progress > 0 {
-		snap.LayerCurrent = int(math.Round(snap.Progress / 100.0 * float64(snap.LayerTotal)))
-		if snap.LayerCurrent < 1 {
-			snap.LayerCurrent = 1
-		}
-		if snap.LayerCurrent > snap.LayerTotal {
-			snap.LayerCurrent = snap.LayerTotal
-		}
-	}
 
 	switch {
 	case restLive:
@@ -312,7 +298,7 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 }
 
 func isLivePrintStatus(status printjobdomain.Status) bool {
-	return status == printjobdomain.StatusPreparing || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusQueued || status == printjobdomain.StatusDraft
+	return status == printjobdomain.StatusPreparing || status == printjobdomain.StatusCalibrating || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusQueued || status == printjobdomain.StatusDraft
 }
 
 func sanitizeLiveProgress(status printjobdomain.Status, progress float64, remainingMin int) float64 {
@@ -343,6 +329,8 @@ func mapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
 // MapCloudPrintStatus maps Bambu Cloud device print_status values.
 func MapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
 	switch strings.ToUpper(strings.TrimSpace(raw)) {
+	case "CALIBRATING", "CALIBRATION", "LEVELING", "HOMING", "HEATING":
+		return printjobdomain.StatusCalibrating, true
 	case "PREPARE", "PREPARING", "SLICING", "DOWNLOADING":
 		return printjobdomain.StatusPreparing, true
 	case "ACTIVE", "RUNNING", "PRINTING", "BUSY", "WORKING":
@@ -354,6 +342,10 @@ func MapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
 	case "FAILED", "FAILURE", "ERROR":
 		return printjobdomain.StatusFailed, true
 	default:
+		upper := strings.ToUpper(strings.TrimSpace(raw))
+		if strings.Contains(upper, "CALIB") {
+			return printjobdomain.StatusCalibrating, true
+		}
 		return printjobdomain.StatusQueued, false
 	}
 }
