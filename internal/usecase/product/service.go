@@ -30,12 +30,26 @@ func NewService(repo ProductRepository) *Service {
 	return &Service{repo: repo}
 }
 
-func (s *Service) Create(ctx context.Context, name, description, material string, estimatedWeight int, estimatedPrintTime time.Duration, price float64) (productdomain.Product, error) {
+func (s *Service) Create(ctx context.Context, name, description, material string, estimatedWeight int, estimatedPrintTime time.Duration, price float64, priceLegal float64, billingMode productdomain.BillingMode) (productdomain.Product, error) {
 	if name == "" || material == "" || estimatedWeight <= 0 {
 		return productdomain.Product{}, fmt.Errorf("%w: invalid product input", domain.ErrInvalid)
 	}
+	switch billingMode {
+	case productdomain.BillingLegal:
+		if priceLegal <= 0 {
+			priceLegal = price
+		}
+		price = 0
+	case productdomain.BillingBoth:
+		// keep both
+	default:
+		billingMode = productdomain.BillingPerson
+		priceLegal = 0
+	}
 
 	p := productdomain.NewProduct(name, description, material, estimatedWeight, estimatedPrintTime, price)
+	p.PriceLegal = priceLegal
+	p.BillingMode = billingMode
 	if err := s.repo.Create(ctx, p); err != nil {
 		return productdomain.Product{}, err
 	}

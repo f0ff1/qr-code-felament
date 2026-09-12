@@ -1,0 +1,7 @@
+BEGIN;
+
+ALTER TABLE print_jobs
+    ADD COLUMN IF NOT EXISTS remaining_minutes INTEGER NOT NULL DEFAULT 0,
+    ADD COLUMN IF NOT EXISTS estimated_duration_sec INTEGER NOT NULL DEFAULT 0;
+
+COMMIT;

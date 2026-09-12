@@ -17,7 +17,9 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"status":"error","code":500,"message":"streaming unsupported"}`)
 			return
 		}
 
@@ -29,7 +31,7 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case evt := <-ch:
-				_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, toJSON(evt))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", toJSON(evt))
 				flusher.Flush()
 			case <-time.After(15 * time.Second):
 				_, _ = fmt.Fprint(w, ": heartbeat\n\n")

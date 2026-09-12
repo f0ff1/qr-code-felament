@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
+    <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <div class="page-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -181,18 +182,22 @@
                 <h3>Добавить катушку</h3>
               </div>
 
-              <div class="form-grid">
+                  <div class="form-grid">
                 <label>
                   <span>Материал</span>
-                  <input name="material" type="text" value="PLA" required />
+                  <select name="material" id="spoolMaterial" required></select>
                 </label>
                 <label>
                   <span>Цвет</span>
-                  <input name="color" type="text" value="Black" required />
+                  <select name="color" id="spoolColor" required></select>
                 </label>
+                <p class="form-hint form-span-2">
+                  Производитель и тип пластика — как в Bambu Cloud/Studio. Цвет сравнивается с таблицей матчинга
+                  (Charcoal из Cloud = чёрный). Название катушки на матч не влияет.
+                </p>
                 <label>
                   <span>Производитель</span>
-                  <input name="manufacturer" type="text" value="Bambu" required />
+                  <select name="manufacturer" id="spoolManufacturer" required></select>
                 </label>
                 <label>
                   <span>Начальный вес, г</span>
@@ -223,19 +228,97 @@
             </div>
             <div id="printerList" class="printer-list"></div>
 
+            <form id="cloudSyncForm" class="data-form">
+              <div class="form-header">
+                <h3>Bambu Lab аккаунт</h3>
+              </div>
+              <p id="cloudAccountBadge" class="form-hint form-span-2">Не подключено — войдите один раз, как в YouTube через Google.</p>
+
+              <div id="cloudSignedInPanel" class="form-grid hidden">
+                <p class="form-hint form-span-2">
+                  Сессия сохранена в зашифрованном виде. Фоновая синхронизация каждые 2 минуты.
+                  Повторный вход не нужен, пока не нажмёте «Выйти».
+                </p>
+                <div class="form-actions form-span-2">
+                  <button type="button" id="cloudSyncOnlyBtn" class="primary-btn">Синхронизировать принтеры</button>
+                  <button type="button" id="cloudLogoutBtn" class="mini-btn">Выйти из Bambu Lab</button>
+                </div>
+              </div>
+
+              <div id="cloudSignInPanel" class="form-grid">
+                <label>
+                  <span>Регион Bambu</span>
+                  <select name="cloudRegion">
+                    <option value="us">Worldwide (api.bambulab.com)</option>
+                    <option value="cn">China (api.bambulab.cn)</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Email аккаунта Bambu</span>
+                  <input name="cloudEmail" type="email" placeholder="friend@email.com" autocomplete="username" />
+                </label>
+                <label>
+                  <span>Пароль</span>
+                  <input name="cloudPassword" type="password" placeholder="пароль Bambu Lab" autocomplete="current-password" />
+                </label>
+                <label>
+                  <span>Код из email (если попросит)</span>
+                  <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
+                </label>
+                <p class="form-hint form-span-2">
+                  После «Войти» Bambu пришлёт код на почту. Введите его и нажмите «Войти» ещё раз.
+                  Если письма нет — проверьте «Спам» и «Отправить код ещё раз».
+                </p>
+                <div class="form-actions form-span-2">
+                  <button type="submit" class="primary-btn">Войти в Bambu Lab</button>
+                  <button type="button" id="cloudResendCodeBtn" class="mini-btn">Отправить код ещё раз</button>
+                </div>
+              </div>
+              <div id="cloudSyncStatus" class="form-status"></div>
+            </form>
+
             <form id="printerForm" class="data-form">
               <div class="form-header">
-                <h3>Добавить принтер</h3>
+                <h3>Добавить принтер вручную</h3>
               </div>
 
               <div class="form-grid">
                 <label>
                   <span>Название</span>
-                  <input name="name" type="text" value="Prusa MK4" required />
+                  <input name="name" type="text" value="Bambu A1" required />
                 </label>
                 <label>
                   <span>Модель</span>
-                  <input name="model" type="text" value="MK4" required />
+                  <input name="model" type="text" value="A1" required />
+                </label>
+                <label class="form-span-2">
+                  <span>Подключение</span>
+                  <select name="connectionMode" id="printerConnectionMode">
+                    <option value="none" selected>Без интеграции (вручную)</option>
+                    <option value="lan">LAN (локальная сеть)</option>
+                  </select>
+                </label>
+
+                <div id="printerLanFields" class="form-span-2 form-grid hidden">
+                  <label>
+                    <span>IP в локальной сети</span>
+                    <input name="lanHost" type="text" placeholder="192.168.1.50" />
+                  </label>
+                  <label>
+                    <span>Serial Number</span>
+                    <input name="lanSerial" type="text" placeholder="01P00A000000000" />
+                  </label>
+                  <label>
+                    <span>Access Code</span>
+                    <input name="lanAccessCode" type="password" placeholder="код из настроек принтера" autocomplete="off" />
+                  </label>
+                </div>
+
+                <label>
+                  <span>Катушка по умолчанию</span>
+                  <select name="defaultSpoolId" id="printerDefaultSpoolId">
+                    <option value="">Автоматически</option>
+                  </select>
                 </label>
               </div>
 

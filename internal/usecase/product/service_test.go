@@ -19,7 +19,7 @@ func TestProductCreateAndGetByID(t *testing.T) {
 	repo := memory.NewProductRepository()
 	service := NewService(repo)
 
-	p, err := service.Create(context.Background(), "Dragon", "Large decorative vase", "PLA", 180, 4*time.Hour+30*time.Minute, 35.0)
+	p, err := service.Create(context.Background(), "Dragon", "Large decorative vase", "PLA", 180, 4*time.Hour+30*time.Minute, 35.0, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -43,7 +43,7 @@ func TestPrintJobCanStartWhenFilamentIsEnough(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -51,11 +51,11 @@ func TestPrintJobCanStartWhenFilamentIsEnough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -76,7 +76,7 @@ func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -84,11 +84,11 @@ func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -105,7 +105,7 @@ func TestPrintJobStartConsumesFilament(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -113,11 +113,11 @@ func TestPrintJobStartConsumesFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -146,7 +146,7 @@ func TestPrintJobPauseAndResume(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -154,11 +154,11 @@ func TestPrintJobPauseAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
@@ -198,7 +198,7 @@ func TestDeleteUnfinishedJobRestoresFilament(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -206,11 +206,11 @@ func TestDeleteUnfinishedJobRestoresFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
-	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35)
+	productEntity, err := productService.Create(context.Background(), "Dragon", "Decor", "PLA", 180, 4*time.Hour, 35, 0, productdomain.BillingPerson)
 	if err != nil {
 		t.Fatalf("Create product error = %v", err)
 	}
