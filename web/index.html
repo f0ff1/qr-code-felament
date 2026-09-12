@@ -230,10 +230,22 @@
 
             <form id="cloudSyncForm" class="data-form">
               <div class="form-header">
-                <h3>Синхронизация Bambu Cloud</h3>
+                <h3>Bambu Lab аккаунт</h3>
               </div>
-              <p id="cloudAccountBadge" class="form-hint form-span-2">Аккаунт ещё не сохранён — войдите один раз.</p>
-              <div class="form-grid">
+              <p id="cloudAccountBadge" class="form-hint form-span-2">Не подключено — войдите один раз, как в YouTube через Google.</p>
+
+              <div id="cloudSignedInPanel" class="form-grid hidden">
+                <p class="form-hint form-span-2">
+                  Сессия сохранена в зашифрованном виде. Фоновая синхронизация каждые 2 минуты.
+                  Повторный вход не нужен, пока не нажмёте «Выйти».
+                </p>
+                <div class="form-actions form-span-2">
+                  <button type="button" id="cloudSyncOnlyBtn" class="primary-btn">Синхронизировать принтеры</button>
+                  <button type="button" id="cloudLogoutBtn" class="mini-btn">Выйти из Bambu Lab</button>
+                </div>
+              </div>
+
+              <div id="cloudSignInPanel" class="form-grid">
                 <label>
                   <span>Регион Bambu</span>
                   <select name="cloudRegion">
@@ -247,19 +259,19 @@
                 </label>
                 <label>
                   <span>Пароль</span>
-                  <input name="cloudPassword" type="password" placeholder="нужен только при первом входе" autocomplete="current-password" />
+                  <input name="cloudPassword" type="password" placeholder="пароль Bambu Lab" autocomplete="current-password" />
                 </label>
                 <label>
                   <span>Код из email (если попросит)</span>
                   <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
                 </label>
                 <p class="form-hint form-span-2">
-                  Один раз войдите — аккаунт сохранится. Дальше синхронизация идёт в фоне каждые 2 минуты без повторного ввода.
-                  Пластик из Cloud (материал/цвет) списывается со склада автоматически при совпадении.
+                  У Bambu Lab нет публичного OAuth «Войти через Bambu» для сторонних сайтов — вход идёт через их login API
+                  (email/пароль + код). После входа токен и пароль хранятся у нас в БД в зашифрованном виде до нажатия «Выйти».
                 </p>
-              </div>
-              <div class="form-actions">
-                <button type="submit" class="primary-btn">Синхронизировать принтеры</button>
+                <div class="form-actions form-span-2">
+                  <button type="submit" class="primary-btn">Войти в Bambu Lab</button>
+                </div>
               </div>
               <div id="cloudSyncStatus" class="form-status"></div>
             </form>

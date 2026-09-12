@@ -260,23 +260,53 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	snap := rest
 	active := restActive || mqttActive
 
+	mqttLive := mqttActive && isLivePrintStatus(mqtt.Status)
+	restLive := restActive && isLivePrintStatus(rest.Status)
+
 	if mqtt.FileName != "" && mqtt.FileName != "." {
 		snap.FileName = mqtt.FileName
 	}
 	if mqtt.ExternalTaskID != "" {
 		snap.ExternalTaskID = mqtt.ExternalTaskID
 	}
-	if mqttActive {
+
+	// Never apply stale MQTT 100%/FINISH telemetry onto a live Cloud ACTIVE print.
+	switch {
+	case mqttLive:
 		snap.Progress = mqtt.Progress
-	} else if mqtt.Progress > snap.Progress {
-		snap.Progress = mqtt.Progress
+		if mqtt.RemainingMin > 0 {
+			snap.RemainingMin = mqtt.RemainingMin
+		}
+		if mqtt.LayerTotal > 0 {
+			snap.LayerTotal = mqtt.LayerTotal
+		}
+		if mqtt.LayerCurrent > 0 {
+			snap.LayerCurrent = mqtt.LayerCurrent
+		}
+	case restLive:
+		// Keep REST progress (usually 0) rather than leftover finished-job MQTT %.
+		if mqtt.RemainingMin > 0 && snap.RemainingMin == 0 {
+			snap.RemainingMin = mqtt.RemainingMin
+		}
+	default:
+		if mqtt.Progress > snap.Progress {
+			snap.Progress = mqtt.Progress
+		}
+		if mqtt.RemainingMin > 0 {
+			snap.RemainingMin = mqtt.RemainingMin
+		}
+		if mqtt.LayerTotal > 0 {
+			snap.LayerTotal = mqtt.LayerTotal
+		}
+		if mqtt.LayerCurrent > 0 {
+			snap.LayerCurrent = mqtt.LayerCurrent
+		}
 	}
-	if mqtt.RemainingMin > 0 {
-		snap.RemainingMin = mqtt.RemainingMin
-	} else if snap.EstimatedDurationSec > 0 && snap.Progress > 0 && snap.Progress < 100 {
+
+	if snap.RemainingMin <= 0 && snap.EstimatedDurationSec > 0 && snap.Progress > 0 && snap.Progress < 100 {
 		snap.RemainingMin = int(math.Round(float64(snap.EstimatedDurationSec) / 60.0 * (1.0 - snap.Progress/100.0)))
 	}
-	if mqtt.RemainingMin > 0 && snap.EstimatedDurationSec == 0 {
+	if mqtt.RemainingMin > 0 && snap.EstimatedDurationSec == 0 && mqttLive {
 		totalMin := mqtt.RemainingMin
 		if mqtt.Progress > 1 && mqtt.Progress < 100 {
 			totalMin = int(math.Round(float64(mqtt.RemainingMin) / (1.0 - mqtt.Progress/100.0)))
@@ -295,12 +325,7 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	if mqtt.EstimatedWeight > 0 {
 		snap.EstimatedWeight = mqtt.EstimatedWeight
 	}
-	if mqtt.LayerTotal > 0 {
-		snap.LayerTotal = mqtt.LayerTotal
-	}
-	if mqtt.LayerCurrent > 0 {
-		snap.LayerCurrent = mqtt.LayerCurrent
-	} else if snap.LayerTotal > 0 && snap.Progress > 0 {
+	if snap.LayerCurrent <= 0 && snap.LayerTotal > 0 && snap.Progress > 0 {
 		snap.LayerCurrent = int(math.Round(snap.Progress / 100.0 * float64(snap.LayerTotal)))
 		if snap.LayerCurrent < 1 {
 			snap.LayerCurrent = 1
@@ -310,15 +335,42 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 		}
 	}
 
-	// Cloud REST uses ACTIVE; MQTT uses RUNNING. Prefer whichever is active.
-	if restActive {
+	switch {
+	case restLive:
 		snap.Status = rest.Status
-	} else if mqttActive {
+	case mqttLive:
 		snap.Status = mqtt.Status
-	} else if mqtt.Status != "" {
+	case restActive:
+		snap.Status = rest.Status
+	case mqttActive:
+		snap.Status = mqtt.Status
+	case mqtt.Status != "":
 		snap.Status = mqtt.Status
 	}
+
+	snap.Progress = sanitizeLiveProgress(snap.Status, snap.Progress, snap.RemainingMin)
 	return snap, active
+}
+
+func isLivePrintStatus(status printjobdomain.Status) bool {
+	return status == printjobdomain.StatusPreparing || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusQueued || status == printjobdomain.StatusDraft
+}
+
+func sanitizeLiveProgress(status printjobdomain.Status, progress float64, remainingMin int) float64 {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	// Active print with time left cannot be fully extruded yet.
+	if isLivePrintStatus(status) && remainingMin > 0 && progress >= 100 {
+		return 99
+	}
+	if isLivePrintStatus(status) && remainingMin > 0 && progress > 99 {
+		return 99
+	}
+	return progress
 }
 
 func mapCloudGcodeState(raw state.GcodeState) (printjobdomain.Status, bool) {

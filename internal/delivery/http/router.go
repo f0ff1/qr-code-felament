@@ -75,6 +75,10 @@ func spoolCurrentDisplayRemaining(spoolEntity spooldomain.Spool, jobs []printjob
 		if progress > 100 {
 			progress = 100
 		}
+		// Bambu can briefly report 100% while remaining time is still > 0 (stale MQTT).
+		if job.RemainingMinutes > 0 && progress >= 100 {
+			progress = 99
+		}
 		notYetUsed += int(float64(weight) * (1.0 - progress/100.0))
 	}
 	return max(0, futureRemaining+notYetUsed)
@@ -283,22 +287,32 @@ func NewRouter() http.Handler {
 	}()
 
 	mux.HandleFunc("/api/bambu/cloud/account", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
-			return
-		}
-		account, err := printerService.GetCloudAccount(context.Background())
-		if err != nil {
+		switch r.Method {
+		case http.MethodGet:
+			account, err := printerService.GetCloudAccount(context.Background())
+			if err != nil {
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"linked": false})
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"linked": account.Linked(),
+				"email":  account.Email,
+				"region": account.Region,
+			})
+		case http.MethodDelete:
+			if err := printerService.LogoutCloud(context.Background()); err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			bambuMonitor.ResetCloudSessions()
+			notifier.Publish("bambu_cloud_logout", "Вы вышли из Bambu Cloud", map[string]any{})
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"linked": false})
-			return
+		default:
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]any{
-			"linked": account.Linked(),
-			"email":  account.Email,
-			"region": account.Region,
-		})
 	})
 
 	mux.HandleFunc("/api/bambu/cloud/sync", func(w http.ResponseWriter, r *http.Request) {

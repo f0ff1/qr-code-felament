@@ -11,6 +11,7 @@ import (
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
 	"filamenttracker/internal/infrastructure/printer/bambu"
+	"filamenttracker/internal/infrastructure/secrets"
 
 	"github.com/google/uuid"
 )
@@ -26,6 +27,7 @@ type Repository interface {
 type CloudAccountRepository interface {
 	Upsert(ctx context.Context, account cloudaccount.Account) error
 	GetLatest(ctx context.Context) (cloudaccount.Account, error)
+	DeleteAll(ctx context.Context) error
 }
 
 type CreateInput struct {
@@ -45,13 +47,21 @@ type CreateInput struct {
 }
 
 type Service struct {
-	repo    Repository
+	repo     Repository
 	accounts CloudAccountRepository
-	adapter printerdomain.Adapter
+	adapter  printerdomain.Adapter
+	secrets  *secrets.Box
 }
 
 func NewService(repo Repository, adapter printerdomain.Adapter, accounts CloudAccountRepository) *Service {
-	return &Service{repo: repo, adapter: adapter, accounts: accounts}
+	return &Service{repo: repo, adapter: adapter, accounts: accounts, secrets: secrets.NewBoxFromEnv()}
+}
+
+func NewServiceWithSecrets(repo Repository, adapter printerdomain.Adapter, accounts CloudAccountRepository, box *secrets.Box) *Service {
+	if box == nil {
+		box = secrets.NewBoxFromEnv()
+	}
+	return &Service{repo: repo, adapter: adapter, accounts: accounts, secrets: box}
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (printerdomain.Printer, error) {
@@ -70,6 +80,9 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (printerdomain.
 
 	if p.CloudEnabled {
 		if _, err := authenticateCloud(&p, input.CloudVerifyCode); err != nil {
+			return printerdomain.Printer{}, err
+		}
+		if err := s.sealPrinterCloudSecrets(&p); err != nil {
 			return printerdomain.Printer{}, err
 		}
 	}
@@ -95,10 +108,10 @@ func (s *Service) UpdateLAN(ctx context.Context, id uuid.UUID, input CreateInput
 		p.Model = strings.TrimSpace(input.Model)
 	}
 	if input.CloudEnabled && strings.TrimSpace(input.CloudPassword) == "" {
-		input.CloudPassword = p.CloudPassword
+		input.CloudPassword = s.openSecret(p.CloudPassword)
 	}
 	if input.CloudEnabled && strings.TrimSpace(input.CloudToken) == "" {
-		input.CloudToken = p.CloudToken
+		input.CloudToken = s.openSecret(p.CloudToken)
 	}
 	if input.LANEnabled && strings.TrimSpace(input.LANAccessCode) == "" {
 		input.LANAccessCode = p.LANAccessCode
@@ -111,6 +124,11 @@ func (s *Service) UpdateLAN(ctx context.Context, id uuid.UUID, input CreateInput
 
 	if p.CloudEnabled && !p.CloudLinked() {
 		if _, err := authenticateCloud(&p, input.CloudVerifyCode); err != nil {
+			return printerdomain.Printer{}, err
+		}
+	}
+	if p.CloudEnabled {
+		if err := s.sealPrinterCloudSecrets(&p); err != nil {
 			return printerdomain.Printer{}, err
 		}
 	}
@@ -236,6 +254,8 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			p.CloudEmail = email
 			if password != "" {
 				p.CloudPassword = password
+			} else {
+				p.CloudPassword = s.openSecret(p.CloudPassword)
 			}
 			p.CloudToken = token
 			p.CloudRegion = region
@@ -244,6 +264,9 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			}
 			p.Status = cloudDevicePrinterStatus(device)
 			p.UpdatedAt = time.Now()
+			if err := s.sealPrinterCloudSecrets(&p); err != nil {
+				return CloudSyncResult{}, err
+			}
 			if err := s.repo.Update(ctx, p); err != nil {
 				return CloudSyncResult{}, err
 			}
@@ -260,6 +283,9 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 		p.CloudToken = token
 		p.CloudRegion = region
 		p.Status = cloudDevicePrinterStatus(device)
+		if err := s.sealPrinterCloudSecrets(&p); err != nil {
+			return CloudSyncResult{}, err
+		}
 		if err := s.repo.Create(ctx, p); err != nil {
 			return CloudSyncResult{}, err
 		}
@@ -287,14 +313,61 @@ func (s *Service) SyncSavedCloudAccount(ctx context.Context) (CloudSyncResult, e
 }
 
 func (s *Service) GetCloudAccount(ctx context.Context) (cloudaccount.Account, error) {
-	return s.loadSavedAccount(ctx)
+	account, err := s.loadSavedAccount(ctx)
+	if err != nil {
+		return cloudaccount.Account{}, err
+	}
+	// Keep Linked() true for API: email present means a saved session exists.
+	// Strip raw secrets before returning to HTTP layer.
+	out := account
+	out.Password = ""
+	out.Token = ""
+	if account.Linked() || strings.TrimSpace(account.Email) != "" {
+		// Sentinel so Account.Linked() stays true without leaking secrets.
+		out.Token = "linked"
+	}
+	return out, nil
+}
+
+func (s *Service) LogoutCloud(ctx context.Context) error {
+	if s.accounts != nil {
+		if err := s.accounts.DeleteAll(ctx); err != nil {
+			return err
+		}
+	}
+	printers, err := s.repo.List(ctx)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	for _, p := range printers {
+		if !p.CloudEnabled && p.CloudEmail == "" && p.CloudToken == "" && p.CloudPassword == "" {
+			continue
+		}
+		p.CloudEnabled = false
+		p.CloudEmail = ""
+		p.CloudPassword = ""
+		p.CloudToken = ""
+		p.CloudRegion = "us"
+		p.UpdatedAt = now
+		if err := s.repo.Update(ctx, p); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *Service) loadSavedAccount(ctx context.Context) (cloudaccount.Account, error) {
 	if s.accounts == nil {
 		return cloudaccount.Account{}, fmt.Errorf("%w: cloud account store", domain.ErrNotFound)
 	}
-	return s.accounts.GetLatest(ctx)
+	account, err := s.accounts.GetLatest(ctx)
+	if err != nil {
+		return cloudaccount.Account{}, err
+	}
+	account.Password = s.openSecret(account.Password)
+	account.Token = s.openSecret(account.Token)
+	return account, nil
 }
 
 func (s *Service) saveAccount(ctx context.Context, email, password, token, region string) error {
@@ -303,21 +376,72 @@ func (s *Service) saveAccount(ctx context.Context, email, password, token, regio
 	}
 	account, err := s.accounts.GetLatest(ctx)
 	if err != nil {
-		account = cloudaccount.New(email, password, token, region)
+		account = cloudaccount.New(email, "", "", region)
 	} else {
 		if email != "" {
 			account.Email = email
 		}
-		if password != "" {
-			account.Password = password
-		}
-		if token != "" {
-			account.Token = token
-		}
 		account.Region = bambu.NormalizeCloudRegion(region)
 		account.UpdatedAt = time.Now()
 	}
+	if password != "" {
+		sealed, sealErr := s.sealSecret(password)
+		if sealErr != nil {
+			return sealErr
+		}
+		account.Password = sealed
+	} else if account.Password != "" && !strings.HasPrefix(account.Password, "enc:v1:") {
+		// Re-seal legacy plaintext on touch.
+		if sealed, sealErr := s.sealSecret(account.Password); sealErr == nil {
+			account.Password = sealed
+		}
+	}
+	if token != "" {
+		sealed, sealErr := s.sealSecret(token)
+		if sealErr != nil {
+			return sealErr
+		}
+		account.Token = sealed
+	}
+	if account.ID == uuid.Nil {
+		account.ID = uuid.New()
+	}
+	if account.CreatedAt.IsZero() {
+		account.CreatedAt = time.Now()
+	}
 	return s.accounts.Upsert(ctx, account)
+}
+
+func (s *Service) sealSecret(value string) (string, error) {
+	if s.secrets == nil {
+		return value, nil
+	}
+	return s.secrets.Seal(value)
+}
+
+func (s *Service) openSecret(value string) string {
+	if s.secrets == nil {
+		return value
+	}
+	return s.secrets.MustOpen(value)
+}
+
+func (s *Service) sealPrinterCloudSecrets(p *printerdomain.Printer) error {
+	if p.CloudPassword != "" {
+		sealed, err := s.sealSecret(p.CloudPassword)
+		if err != nil {
+			return err
+		}
+		p.CloudPassword = sealed
+	}
+	if p.CloudToken != "" {
+		sealed, err := s.sealSecret(p.CloudToken)
+		if err != nil {
+			return err
+		}
+		p.CloudToken = sealed
+	}
+	return nil
 }
 
 func cloudDevicePrinterStatus(device bambu.CloudDevice) printerdomain.PrinterStatus {
@@ -356,6 +480,9 @@ func (s *Service) VerifyCloud(ctx context.Context, id uuid.UUID, code string) (p
 	}
 	p.CloudToken = token
 	p.UpdatedAt = time.Now()
+	if err := s.sealPrinterCloudSecrets(&p); err != nil {
+		return printerdomain.Printer{}, err
+	}
 	if err := s.repo.Update(ctx, p); err != nil {
 		return printerdomain.Printer{}, err
 	}

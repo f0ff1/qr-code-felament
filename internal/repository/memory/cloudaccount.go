@@ -46,3 +46,10 @@ func (r *CloudAccountRepository) GetLatest(ctx context.Context) (cloudaccount.Ac
 	}
 	return latest, nil
 }
+
+func (r *CloudAccountRepository) DeleteAll(ctx context.Context) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.items = make(map[string]cloudaccount.Account)
+	return nil
+}

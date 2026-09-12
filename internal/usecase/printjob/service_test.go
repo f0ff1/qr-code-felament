@@ -305,6 +305,41 @@ func TestSyncFromBambuReservesWeightAndUpdatesLayers(t *testing.T) {
 	}
 }
 
+func TestSyncFromBambuDoesNotTreatStale100AsFullyConsumed(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 40)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, _, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-stale-100",
+		FileName:        "bunny.gcode",
+		Progress:        100,
+		Status:          printjobdomain.StatusPrinting,
+		RemainingMin:    55,
+		EstimatedWeight: 100,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Progress >= 100 {
+		t.Fatalf("live job with ETA must not keep progress=100, got %v", job.Progress)
+	}
+	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 900 {
+		t.Fatalf("future remaining = %d, want 900", updatedSpool.CurrentWeight)
+	}
+}
+
 func TestNormalizeMaterialGenericPLA(t *testing.T) {
 	if got := normalizeMaterial("Generic PLA"); got != "PLA" {
 		t.Fatalf("Generic PLA => %s, want PLA", got)

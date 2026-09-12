@@ -119,6 +119,17 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 	if atEnd != 780 {
 		t.Fatalf("current remaining at 100%% = %d, want 780", atEnd)
 	}
+
+	stale100 := spoolCurrentDisplayRemaining(spool, []printjobdomain.PrintJob{{
+		SpoolID:          spool.ID,
+		Status:           printjobdomain.StatusPrinting,
+		Progress:         100,
+		RemainingMinutes: 40,
+		EstimatedWeight:  220,
+	}})
+	if stale100 <= 780 {
+		t.Fatalf("stale 100%% with ETA should still count unused filament, got %d", stale100)
+	}
 	if !strings.Contains(page, `href="https://example.com/"`) {
 		t.Fatalf("rendered page should link home to public origin, got: %s", page)
 	}

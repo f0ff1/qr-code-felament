@@ -14,6 +14,7 @@ import (
 
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
+	"filamenttracker/internal/infrastructure/secrets"
 	printjobusecase "filamenttracker/internal/usecase/printjob"
 
 	"github.com/google/uuid"
@@ -45,6 +46,7 @@ type Monitor struct {
 	printers PrinterStore
 	jobs     JobSyncer
 	notifier EventPublisher
+	secrets  *secrets.Box
 	interval time.Duration
 
 	mu     sync.Mutex
@@ -91,10 +93,15 @@ func NewMonitor(printers PrinterStore, jobs JobSyncer, notifier EventPublisher) 
 		printers:      printers,
 		jobs:          jobs,
 		notifier:      notifier,
+		secrets:       secrets.NewBoxFromEnv(),
 		interval:      7 * time.Second,
 		known:         make(map[string]uuid.UUID),
 		cloudSessions: make(map[string]*cloudSession),
 	}
+}
+
+func (m *Monitor) ResetCloudSessions() {
+	m.closeCloudSessions()
 }
 
 func (m *Monitor) Start(parent context.Context) {
@@ -289,9 +296,10 @@ func (m *Monitor) pollCloudPrinter(ctx context.Context, p printerdomain.Printer)
 }
 
 func (m *Monitor) ensureCloudSession(ctx context.Context, p *printerdomain.Printer) (*cloudSession, error) {
-	token := strings.TrimSpace(p.CloudToken)
+	token := strings.TrimSpace(m.openSecret(p.CloudToken))
+	password := strings.TrimSpace(m.openSecret(p.CloudPassword))
 	if token == "" {
-		result, err := CloudLogin(p.CloudEmail, p.CloudPassword, p.CloudRegion)
+		result, err := CloudLogin(p.CloudEmail, password, p.CloudRegion)
 		if err != nil {
 			return nil, err
 		}
@@ -299,7 +307,11 @@ func (m *Monitor) ensureCloudSession(ctx context.Context, p *printerdomain.Print
 			return nil, fmt.Errorf("cloud account requires email verification code")
 		}
 		token = result.Token
-		p.CloudToken = token
+		if sealed, err := m.sealSecret(token); err == nil {
+			p.CloudToken = sealed
+		} else {
+			p.CloudToken = token
+		}
 		p.UpdatedAt = time.Now()
 		_ = m.printers.Update(ctx, *p)
 	}
@@ -326,6 +338,20 @@ func (m *Monitor) ensureCloudSession(ctx context.Context, p *printerdomain.Print
 	}
 	m.cloudSessions[key] = session
 	return session, nil
+}
+
+func (m *Monitor) openSecret(value string) string {
+	if m.secrets == nil {
+		return value
+	}
+	return m.secrets.MustOpen(value)
+}
+
+func (m *Monitor) sealSecret(value string) (string, error) {
+	if m.secrets == nil {
+		return value, nil
+	}
+	return m.secrets.Seal(value)
 }
 
 func (m *Monitor) invalidateCloudSession(p printerdomain.Printer) {

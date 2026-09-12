@@ -125,8 +125,9 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 
 	changed := false
 	if existing.Source == printjobdomain.SourceBambu {
-		if math.Abs(snap.Progress-existing.Progress) >= 0.1 {
-			existing.Progress = snap.Progress
+		liveProgress := sanitizeJobProgress(snap.Status, snap.Progress, snap.RemainingMin)
+		if math.Abs(liveProgress-existing.Progress) >= 0.1 {
+			existing.Progress = liveProgress
 			changed = true
 		}
 	} else if snap.Progress > existing.Progress {
@@ -297,6 +298,20 @@ func absInt(v int) int {
 	return v
 }
 
+func sanitizeJobProgress(status printjobdomain.Status, progress float64, remainingMin int) float64 {
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	live := status == printjobdomain.StatusPreparing || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused || status == printjobdomain.StatusQueued || status == printjobdomain.StatusDraft
+	if live && remainingMin > 0 && progress >= 100 {
+		return 99
+	}
+	return progress
+}
+
 func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Printer, snap BambuSnapshot) (printjobdomain.PrintJob, error) {
 	productID, spoolID, matchedWeight, draft := s.matchResources(ctx, printer, snap)
 	// Prefer Bambu-reported filament usage; fall back to matched product, then time heuristic.
@@ -348,7 +363,7 @@ func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Pri
 		ExternalTaskID:       snap.ExternalTaskID,
 		FileName:             snap.FileName,
 		IsDraft:              draft,
-		Progress:             snap.Progress,
+		Progress:             sanitizeJobProgress(snap.Status, snap.Progress, snap.RemainingMin),
 		RemainingMinutes:     snap.RemainingMin,
 		EstimatedDurationSec: durationSec,
 		LayerCurrent:         layerCurrent,

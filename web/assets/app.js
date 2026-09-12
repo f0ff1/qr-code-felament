@@ -39,6 +39,10 @@ const refs = {
   cloudSyncForm: document.getElementById('cloudSyncForm'),
   cloudSyncStatus: document.getElementById('cloudSyncStatus'),
   cloudAccountBadge: document.getElementById('cloudAccountBadge'),
+  cloudSignInPanel: document.getElementById('cloudSignInPanel'),
+  cloudSignedInPanel: document.getElementById('cloudSignedInPanel'),
+  cloudSyncOnlyBtn: document.getElementById('cloudSyncOnlyBtn'),
+  cloudLogoutBtn: document.getElementById('cloudLogoutBtn'),
   productForm: document.getElementById('productForm'),
   jobForm: document.getElementById('jobForm'),
   spoolFormStatus: document.getElementById('spoolFormStatus'),
@@ -281,10 +285,16 @@ function jobReservesSpool(job, spoolId) {
 }
 
 function getJobPrintProgressPercent(job) {
-  // Filament burn-down must follow printer %, not wall-clock estimates.
+  // Filament burn-down must follow printer/job %, same for manual and Bambu.
   let progress = Number(job?.progress ?? 0);
   if (!Number.isFinite(progress) || progress < 0) progress = 0;
   if (progress > 100) progress = 100;
+  const status = String(job?.status ?? '').toLowerCase();
+  const live = ['printing', 'paused', 'preparing', 'queued', 'draft'].includes(status);
+  // Stale Cloud MQTT can report 100% while the job is still live with ETA left.
+  if (live && Number(job?.remainingMinutes) > 0 && progress >= 100) {
+    progress = 99;
+  }
   return progress;
 }
 
@@ -1005,46 +1015,104 @@ async function syncBambuCloud(event) {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        email: form.cloudEmail.value,
-        password: form.cloudPassword.value,
-        region: form.cloudRegion.value || 'us',
+        email: form.cloudEmail?.value || '',
+        password: form.cloudPassword?.value || '',
+        region: form.cloudRegion?.value || 'us',
         verifyCode: form.cloudVerifyCode?.value || '',
       }),
     });
 
     if (result.needs_verification) {
-      notify(result.message || 'Введите код из email и синхронизируйте снова', 'warning', 'Bambu Cloud');
+      notify(result.message || 'Введите код из email и войдите снова', 'warning', 'Bambu Lab');
       form.cloudVerifyCode?.focus();
       return;
     }
 
     const names = (result.devices || []).map((d) => d.name || d.serial).join(', ');
-    notify(`Синхронизировано: ${result.count || 0} · ${names}`, 'success', 'Bambu Cloud');
-    form.cloudPassword.value = '';
-    form.cloudVerifyCode.value = '';
+    notify(`Вход выполнен · синхронизировано: ${result.count || 0} · ${names}`, 'success', 'Bambu Lab');
+    if (form.cloudPassword) form.cloudPassword.value = '';
+    if (form.cloudVerifyCode) form.cloudVerifyCode.value = '';
     await refreshCloudAccountBadge();
     await loadData();
   } catch (error) {
-    notify(error.message || 'Не удалось синхронизировать Bambu Cloud', 'error', 'Bambu Cloud');
+    notify(error.message || 'Не удалось войти в Bambu Lab', 'error', 'Bambu Lab');
   } finally {
     setFormBusy(form, false);
   }
 }
 
+async function syncBambuCloudSaved() {
+  const btn = refs.cloudSyncOnlyBtn;
+  if (btn?.dataset.busy === 'true') return;
+  if (btn) btn.dataset.busy = 'true';
+  try {
+    const result = await fetchJSON('/api/bambu/cloud/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+    if (result.needs_verification) {
+      notify(result.message || 'Нужен повторный вход с кодом из email', 'warning', 'Bambu Lab');
+      setCloudSessionUI(false);
+      return;
+    }
+    const names = (result.devices || []).map((d) => d.name || d.serial).join(', ');
+    notify(`Синхронизировано: ${result.count || 0} · ${names}`, 'success', 'Bambu Lab');
+    await loadData();
+  } catch (error) {
+    notify(error.message || 'Не удалось синхронизировать принтеры', 'error', 'Bambu Lab');
+  } finally {
+    if (btn) btn.dataset.busy = 'false';
+  }
+}
+
+async function logoutBambuCloud() {
+  const btn = refs.cloudLogoutBtn;
+  if (btn?.dataset.busy === 'true') return;
+  if (btn) btn.dataset.busy = 'true';
+  try {
+    await fetchJSON('/api/bambu/cloud/account', { method: 'DELETE' });
+    notify('Вы вышли из Bambu Lab. Сессия удалена.', 'success', 'Bambu Lab');
+    const form = refs.cloudSyncForm;
+    if (form?.cloudPassword) form.cloudPassword.value = '';
+    if (form?.cloudVerifyCode) form.cloudVerifyCode.value = '';
+    if (form?.cloudEmail) form.cloudEmail.value = '';
+    await refreshCloudAccountBadge();
+    await loadData();
+  } catch (error) {
+    notify(error.message || 'Не удалось выйти', 'error', 'Bambu Lab');
+  } finally {
+    if (btn) btn.dataset.busy = 'false';
+  }
+}
+
+function setCloudSessionUI(linked, email = '', region = 'us') {
+  if (refs.cloudSignInPanel) {
+    refs.cloudSignInPanel.classList.toggle('hidden', Boolean(linked));
+  }
+  if (refs.cloudSignedInPanel) {
+    refs.cloudSignedInPanel.classList.toggle('hidden', !linked);
+  }
+  if (refs.cloudAccountBadge) {
+    refs.cloudAccountBadge.textContent = linked
+      ? `Вы вошли как ${email || 'Bambu Lab'} · сессия активна до выхода`
+      : 'Не подключено — войдите один раз, как в YouTube через Google.';
+  }
+  const form = refs.cloudSyncForm;
+  if (form?.cloudRegion && region) form.cloudRegion.value = region;
+  if (form?.cloudEmail && email && !linked) form.cloudEmail.value = email;
+}
+
 async function refreshCloudAccountBadge() {
-  if (!refs.cloudAccountBadge) return;
   try {
     const account = await fetchJSON('/api/bambu/cloud/account');
-    if (account.linked) {
-      refs.cloudAccountBadge.textContent = `Сохранён аккаунт ${account.email || ''} · фоновая синхронизация активна`;
-      const form = refs.cloudSyncForm;
-      if (form?.cloudEmail && !form.cloudEmail.value) form.cloudEmail.value = account.email || '';
-      if (form?.cloudRegion && account.region) form.cloudRegion.value = account.region;
-    } else {
-      refs.cloudAccountBadge.textContent = 'Аккаунт ещё не сохранён — войдите один раз.';
+    setCloudSessionUI(Boolean(account.linked), account.email || '', account.region || 'us');
+    const form = refs.cloudSyncForm;
+    if (account.linked && form?.cloudEmail) {
+      form.cloudEmail.value = account.email || '';
     }
   } catch {
-    refs.cloudAccountBadge.textContent = 'Аккаунт ещё не сохранён — войдите один раз.';
+    setCloudSessionUI(false);
   }
 }
 
@@ -1388,6 +1456,8 @@ function bindEvents() {
 
   refs.spoolForm.addEventListener('submit', createSpool);
   refs.cloudSyncForm?.addEventListener('submit', syncBambuCloud);
+  refs.cloudSyncOnlyBtn?.addEventListener('click', syncBambuCloudSaved);
+  refs.cloudLogoutBtn?.addEventListener('click', logoutBambuCloud);
   refs.printerForm.addEventListener('submit', createPrinter);
   refs.printerForm?.connectionMode?.addEventListener('change', syncPrinterConnectionFields);
   syncPrinterConnectionFields();

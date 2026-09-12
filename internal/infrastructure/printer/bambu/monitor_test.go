@@ -68,7 +68,7 @@ func TestMergeCloudSnapshotsPrefersMqttProgressAndRemaining(t *testing.T) {
 	mqtt := printjobusecase.BambuSnapshot{
 		ExternalTaskID: "99",
 		FileName:       "from-mqtt",
-		Status:         printjobdomain.StatusQueued,
+		Status:         printjobdomain.StatusPrinting,
 		Progress:       42,
 		RemainingMin:   70,
 	}
@@ -81,6 +81,26 @@ func TestMergeCloudSnapshotsPrefersMqttProgressAndRemaining(t *testing.T) {
 	}
 	if snap.EstimatedDurationSec != 7200 {
 		t.Fatalf("should keep cloud costTime duration, got %d", snap.EstimatedDurationSec)
+	}
+}
+
+func TestMergeCloudSnapshotsIgnoresStaleFinishedMqttOnLiveRest(t *testing.T) {
+	rest := printjobusecase.BambuSnapshot{
+		Status:       printjobdomain.StatusPrinting,
+		Progress:     0,
+		RemainingMin: 80,
+	}
+	mqtt := printjobusecase.BambuSnapshot{
+		Status:       printjobdomain.StatusCompleted,
+		Progress:     100,
+		RemainingMin: 0,
+	}
+	snap, active := mergeCloudSnapshots(rest, true, mqtt, true)
+	if !active || snap.Status != printjobdomain.StatusPrinting {
+		t.Fatalf("expected live printing from REST, got %s/%v", snap.Status, active)
+	}
+	if snap.Progress != 0 {
+		t.Fatalf("stale MQTT 100%% must not overwrite live print progress, got %v", snap.Progress)
 	}
 }
 

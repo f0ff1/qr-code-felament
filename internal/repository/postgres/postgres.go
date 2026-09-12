@@ -662,3 +662,8 @@ func (r *CloudAccountRepository) GetLatest(ctx context.Context) (cloudaccount.Ac
 	}
 	return a, nil
 }
+
+func (r *CloudAccountRepository) DeleteAll(ctx context.Context) error {
+	_, err := r.db.ExecContext(ctx, `DELETE FROM bambu_cloud_accounts`)
+	return err
+}
