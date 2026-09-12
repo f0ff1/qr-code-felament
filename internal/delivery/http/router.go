@@ -25,7 +25,7 @@ import (
 	printerusecase "filamenttracker/internal/usecase/printer"
 	printjobusecase "filamenttracker/internal/usecase/printjob"
 	productusecase "filamenttracker/internal/usecase/product"
-runtimeusecase "filamenttracker/internal/usecase/runtime"
+	runtimeusecase "filamenttracker/internal/usecase/runtime"
 	spoolusecase "filamenttracker/internal/usecase/spool"
 
 	"github.com/google/uuid"
@@ -112,6 +112,7 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, proj
     <div class="badge">%s</div>
     <div class="grid">
       <div class="item"><strong>Производитель</strong><span>%s</span></div>
+      <div class="item"><strong>Остаток на данный момент</strong><span>%d г</span></div>
       <div class="item"><strong>Остаток в будущем</strong><span>%d г</span></div>
       <div class="item"><strong>QR token</strong><span class="muted">%s</span></div>
     </div>
@@ -126,11 +127,22 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, proj
 		spoolEntity.Color,
 		statusLabel,
 		spoolEntity.Manufacturer,
+		currentRemaining,
 		projectedRemaining,
 		spoolEntity.QRToken,
 		baseURL,
 		spoolEntity.QRToken,
 	)
+}
+
+func jsonError(w http.ResponseWriter, message string, status int) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	_ = json.NewEncoder(w).Encode(map[string]any{
+		"status":  "error",
+		"code":    status,
+		"message": message,
+	})
 }
 
 func NewRouter() http.Handler {
@@ -167,19 +179,31 @@ func NewRouter() http.Handler {
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 	inventoryService := inventoryusecase.NewService(spoolRepo, inventoryRepo)
 	forecastService := predictionusecase.NewEstimator()
-runtimeSynchronizer := runtimeusecase.NewSynchronizer(spoolRepo, printerRepo, printJobRepo, productRepo, runtime.Redis)
-syncRuntime := func(ctx context.Context) {
-	if err := runtimeSynchronizer.Sync(ctx); err != nil {
-		log.Printf("sync runtime state: %v", err)
+	runtimeSynchronizer := runtimeusecase.NewSynchronizer(spoolRepo, printerRepo, printJobRepo, productRepo, runtime.Redis)
+	syncRuntime := func(ctx context.Context) {
+		if err := runtimeSynchronizer.Sync(ctx); err != nil {
+			log.Printf("sync runtime state: %v", err)
+		}
 	}
-}
 	notifier := notificationusecase.NewService()
-	ensureDemoData(context.Background(), spoolService, printerService, productService, printJobService)
+	demoCtx, demoCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ensureDemoData(demoCtx, spoolService, printerService, productService, printJobService)
+	demoCancel()
 
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		dbStatus := "memory"
+		if runtime.DB != nil {
+			dbStatus = "postgres"
+			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+			defer cancel()
+			if err := runtime.DB.PingContext(ctx); err != nil {
+				jsonError(w, err.Error(), http.StatusServiceUnavailable)
+				return
+			}
+		}
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write([]byte(`{"status":"ok"}`))
+		_ = json.NewEncoder(w).Encode(map[string]any{"status": "ok", "db": dbStatus})
 	})
 
 	mux.HandleFunc("/api/spools", func(w http.ResponseWriter, r *http.Request) {
@@ -187,7 +211,7 @@ syncRuntime := func(ctx context.Context) {
 		case http.MethodGet:
 			spools, err := spoolService.List(context.Background())
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			payload := make([]map[string]any, 0, len(spools))
@@ -214,12 +238,12 @@ syncRuntime := func(ctx context.Context) {
 				Price         float64 `json:"price"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				http.Error(w, "invalid payload", http.StatusBadRequest)
+				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
 			entity, err := spoolService.Create(context.Background(), spooldomain.Material(input.Material), input.Color, input.Manufacturer, input.InitialWeight, input.Price)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			notifier.Publish("spool_created", "New spool created", map[string]any{"spool_id": entity.ID.String(), "status": string(entity.Status)})
@@ -227,47 +251,47 @@ syncRuntime := func(ctx context.Context) {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": entity.ID.String(), "qr_token": entity.QRToken})
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	mux.HandleFunc("/api/spools/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/spools/")
 		if strings.HasSuffix(path, "/weight") {
 			if r.Method != http.MethodPatch {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			idString := strings.TrimSuffix(path, "/weight")
 			id, err := uuid.Parse(idString)
 			if err != nil {
-				http.Error(w, "invalid spool id", http.StatusBadRequest)
+				jsonError(w, "invalid spool id", http.StatusBadRequest)
 				return
 			}
 			var input struct {
 				RemainingWeight int `json:"remainingWeight"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				http.Error(w, "invalid payload", http.StatusBadRequest)
+				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
 			if err := spoolService.UpdateRemaining(context.Background(), id, input.RemainingWeight); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
 			return
 		}
 		if r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		id, err := uuid.Parse(path)
 		if err != nil {
-			http.Error(w, "invalid spool id", http.StatusBadRequest)
+			jsonError(w, "invalid spool id", http.StatusBadRequest)
 			return
 		}
 		if err := spoolService.Delete(context.Background(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -278,7 +302,7 @@ syncRuntime := func(ctx context.Context) {
 		case http.MethodGet:
 			printers, err := printerService.List(context.Background())
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			payload := make([]map[string]any, 0, len(printers))
@@ -298,12 +322,12 @@ syncRuntime := func(ctx context.Context) {
 				Model string `json:"model"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				http.Error(w, "invalid payload", http.StatusBadRequest)
+				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
 			entity, err := printerService.Create(context.Background(), input.Name, input.Model)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			notifier.Publish("printer_created", "Printer registered", map[string]any{"printer_id": entity.ID.String(), "status": string(entity.Status)})
@@ -311,22 +335,22 @@ syncRuntime := func(ctx context.Context) {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": entity.ID.String(), "status": string(entity.Status)})
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	mux.HandleFunc("/api/printers/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		idString := strings.TrimPrefix(r.URL.Path, "/api/printers/")
 		id, err := uuid.Parse(idString)
 		if err != nil {
-			http.Error(w, "invalid printer id", http.StatusBadRequest)
+			jsonError(w, "invalid printer id", http.StatusBadRequest)
 			return
 		}
 		if err := printerService.Delete(context.Background(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -337,7 +361,7 @@ syncRuntime := func(ctx context.Context) {
 		case http.MethodGet:
 			products, err := productService.List(context.Background())
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			payload := make([]map[string]any, 0, len(products))
@@ -364,17 +388,17 @@ syncRuntime := func(ctx context.Context) {
 				Price              float64 `json:"price"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				http.Error(w, "invalid payload", http.StatusBadRequest)
+				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
 			duration, err := timeFromString(input.EstimatedPrintTime)
 			if err != nil {
-				http.Error(w, "invalid duration", http.StatusBadRequest)
+				jsonError(w, "invalid duration", http.StatusBadRequest)
 				return
 			}
 			entity, err := productService.Create(context.Background(), input.Name, input.Description, input.Material, input.EstimatedWeight, duration, input.Price)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			notifier.Publish("product_created", "Product created", map[string]any{"product_id": entity.ID.String(), "material": entity.Material})
@@ -382,22 +406,22 @@ syncRuntime := func(ctx context.Context) {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": entity.ID.String(), "name": entity.Name})
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	mux.HandleFunc("/api/products/", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodDelete {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		idString := strings.TrimPrefix(r.URL.Path, "/api/products/")
 		id, err := uuid.Parse(idString)
 		if err != nil {
-			http.Error(w, "invalid product id", http.StatusBadRequest)
+			jsonError(w, "invalid product id", http.StatusBadRequest)
 			return
 		}
 		if err := productService.Delete(context.Background(), id); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -408,19 +432,19 @@ syncRuntime := func(ctx context.Context) {
 		case http.MethodGet:
 			jobs, err := printJobService.List(context.Background())
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
+				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
 			payload := make([]map[string]any, 0, len(jobs))
 			for _, job := range jobs {
 				payload = append(payload, map[string]any{
-					"id":         job.ID.String(),
-					"printer_id": job.PrinterID.String(),
-					"product_id": job.ProductID.String(),
-					"spool_id":   job.SpoolID.String(),
-					"status":     string(job.Status),
-					"progress":   job.Progress,
-					"started_at": job.StartedAt.Format(time.RFC3339),
+					"id":          job.ID.String(),
+					"printer_id":  job.PrinterID.String(),
+					"product_id":  job.ProductID.String(),
+					"spool_id":    job.SpoolID.String(),
+					"status":      string(job.Status),
+					"progress":    job.Progress,
+					"started_at":  job.StartedAt.Format(time.RFC3339),
 					"finished_at": job.FinishedAt,
 				})
 			}
@@ -433,27 +457,27 @@ syncRuntime := func(ctx context.Context) {
 				SpoolID   string `json:"spoolId"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-				http.Error(w, "invalid payload", http.StatusBadRequest)
+				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
 			printerID, err := uuid.Parse(input.PrinterID)
 			if err != nil {
-				http.Error(w, "invalid printer id", http.StatusBadRequest)
+				jsonError(w, "invalid printer id", http.StatusBadRequest)
 				return
 			}
 			productID, err := uuid.Parse(input.ProductID)
 			if err != nil {
-				http.Error(w, "invalid product id", http.StatusBadRequest)
+				jsonError(w, "invalid product id", http.StatusBadRequest)
 				return
 			}
 			spoolID, err := uuid.Parse(input.SpoolID)
 			if err != nil {
-				http.Error(w, "invalid spool id", http.StatusBadRequest)
+				jsonError(w, "invalid spool id", http.StatusBadRequest)
 				return
 			}
 			job, err := printJobService.Start(context.Background(), printerID, productID, spoolID)
 			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			notifier.Publish("print_started", "Print job started", map[string]any{"job_id": job.ID.String(), "status": string(job.Status)})
@@ -461,7 +485,7 @@ syncRuntime := func(ctx context.Context) {
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": job.ID.String(), "status": string(job.Status)})
 		default:
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	mux.HandleFunc("/api/print-jobs/", func(w http.ResponseWriter, r *http.Request) {
@@ -471,68 +495,68 @@ syncRuntime := func(ctx context.Context) {
 			if r.Method == http.MethodDelete {
 				id, err := uuid.Parse(path)
 				if err != nil {
-					http.Error(w, "invalid job id", http.StatusBadRequest)
+					jsonError(w, "invalid job id", http.StatusBadRequest)
 					return
 				}
 				if err := printJobService.Delete(context.Background(), id); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
+					jsonError(w, err.Error(), http.StatusBadRequest)
 					return
 				}
 				w.WriteHeader(http.StatusNoContent)
 				return
 			}
-			http.Error(w, "invalid request path", http.StatusBadRequest)
+			jsonError(w, "invalid request path", http.StatusBadRequest)
 			return
 		}
 		id, err := uuid.Parse(parts[0])
 		if err != nil {
-			http.Error(w, "invalid job id", http.StatusBadRequest)
+			jsonError(w, "invalid job id", http.StatusBadRequest)
 			return
 		}
 		switch parts[1] {
 		case "pause":
 			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			if err := printJobService.Pause(context.Background(), id); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
 		case "resume":
 			if r.Method != http.MethodPost {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			if err := printJobService.Resume(context.Background(), id); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			w.WriteHeader(http.StatusOK)
 		case "delete":
 			if r.Method != http.MethodDelete {
-				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 				return
 			}
 			if err := printJobService.Delete(context.Background(), id); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
+				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			w.WriteHeader(http.StatusNoContent)
 		default:
-			http.Error(w, "invalid action", http.StatusBadRequest)
+			jsonError(w, "invalid action", http.StatusBadRequest)
 		}
 	})
 
 	mux.HandleFunc("/api/inventory/summary", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		summary, err := inventoryService.GetSummary(context.Background())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make([]map[string]any, 0, len(summary))
@@ -549,12 +573,12 @@ syncRuntime := func(ctx context.Context) {
 
 	mux.HandleFunc("/api/inventory/transactions", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		transactions, err := inventoryService.ListTransactions(context.Background())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		payload := make([]map[string]any, 0, len(transactions))
@@ -573,7 +597,7 @@ syncRuntime := func(ctx context.Context) {
 
 	mux.HandleFunc("/api/inventory/consume", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		var input struct {
@@ -581,16 +605,16 @@ syncRuntime := func(ctx context.Context) {
 			Weight  int    `json:"weight"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
-			http.Error(w, "invalid payload", http.StatusBadRequest)
+			jsonError(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
 		spoolID, err := uuid.Parse(input.SpoolID)
 		if err != nil {
-			http.Error(w, "invalid spool id", http.StatusBadRequest)
+			jsonError(w, "invalid spool id", http.StatusBadRequest)
 			return
 		}
 		if err := inventoryService.RecordConsumption(context.Background(), spoolID, input.Weight); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			jsonError(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -600,18 +624,18 @@ syncRuntime := func(ctx context.Context) {
 
 	mux.HandleFunc("/api/forecast", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet {
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
 		requiredWeightParam := r.URL.Query().Get("requiredWeight")
 		requiredWeight, err := strconv.Atoi(requiredWeightParam)
 		if err != nil || requiredWeight < 0 {
-			http.Error(w, "requiredWeight must be a non-negative integer", http.StatusBadRequest)
+			jsonError(w, "requiredWeight must be a non-negative integer", http.StatusBadRequest)
 			return
 		}
 		spools, err := spoolService.List(context.Background())
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
 		availableWeight := 0
@@ -657,13 +681,13 @@ syncRuntime := func(ctx context.Context) {
 	mux.HandleFunc("/public/spools/qr/", func(w http.ResponseWriter, r *http.Request) {
 		token := strings.TrimPrefix(r.URL.Path, "/public/spools/qr/")
 		if token == "" {
-			http.Error(w, "missing token", http.StatusBadRequest)
+			jsonError(w, "missing token", http.StatusBadRequest)
 			return
 		}
 
 		spoolEntity, err := spoolService.GetByQRToken(context.Background(), token)
 		if err != nil {
-			http.Error(w, "spool not found", http.StatusNotFound)
+			jsonError(w, "spool not found", http.StatusNotFound)
 			return
 		}
 
@@ -671,7 +695,7 @@ syncRuntime := func(ctx context.Context) {
 		qrTarget := baseURL + "/spool/" + spoolEntity.QRToken
 		png, err := spooldomain.GenerateQRPNG(qrTarget)
 		if err != nil {
-			http.Error(w, "could not generate qr code", http.StatusInternalServerError)
+			jsonError(w, "could not generate qr code", http.StatusInternalServerError)
 			return
 		}
 
@@ -717,18 +741,19 @@ syncRuntime := func(ctx context.Context) {
 		indexPath := filepath.Join(webRoot, "index.html")
 		content, err := os.ReadFile(indexPath)
 		if err != nil {
-			http.Error(w, "index not found", http.StatusInternalServerError)
+			jsonError(w, "index not found", http.StatusInternalServerError)
 			return
 		}
 		_, _ = w.Write(content)
 	})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			syncRuntime(r.Context())
-		}
 		mux.ServeHTTP(w, r)
-		if strings.HasPrefix(r.URL.Path, "/api/") {
-			syncRuntime(r.Context())
+		if strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api/health" {
+			go func() {
+				ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+				defer cancel()
+				syncRuntime(ctx)
+			}()
 		}
 	})
 }

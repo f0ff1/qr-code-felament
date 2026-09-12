@@ -18,7 +18,7 @@ func Load() Settings {
 	_ = loadDotEnv(".env", ".env.local")
 	return Settings{
 		DatabaseURL:   getenv("DATABASE_URL", ""),
-		RedisAddr:     getenv("REDIS_ADDR", "localhost:6379"),
+		RedisAddr:     getenv("REDIS_ADDR", ""),
 		Port:          getenv("PORT", "8080"),
 		PublicBaseURL: getenv("PUBLIC_BASE_URL", "http://localhost:8080"),
 	}

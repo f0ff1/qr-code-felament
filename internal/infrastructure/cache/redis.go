@@ -37,6 +37,9 @@ func NewClient(addr string) (*Client, error) {
 // WriteJSON stores the latest authoritative runtime snapshot. PostgreSQL remains
 // the source of truth; cache failures must not prevent a successful DB update.
 func (c *Client) WriteJSON(ctx context.Context, key string, value any) error {
+	if c == nil || c.Client == nil {
+		return nil
+	}
 	payload, err := json.Marshal(value)
 	if err != nil {
 		return fmt.Errorf("marshal cache value: %w", err)

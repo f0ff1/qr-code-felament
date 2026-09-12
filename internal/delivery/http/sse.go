@@ -17,7 +17,9 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 
 		flusher, ok := w.(http.Flusher)
 		if !ok {
-			http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = fmt.Fprint(w, `{"status":"error","code":500,"message":"streaming unsupported"}`)
 			return
 		}
 

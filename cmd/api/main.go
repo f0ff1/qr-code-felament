@@ -7,16 +7,18 @@ import (
 	"os"
 	"time"
 
+	"filamenttracker/internal/config"
 	httpdelivery "filamenttracker/internal/delivery/http"
 )
 
 func main() {
+	cfg := config.Load()
 	mux := httpdelivery.NewRouter()
+	addr := ":" + cfg.Port
 	server := &http.Server{
-		Addr:              ":8080",
+		Addr:              addr,
 		Handler:           mux,
 		ReadHeaderTimeout: 5 * time.Second,
-		WriteTimeout:      15 * time.Second,
 		IdleTimeout:       60 * time.Second,
 	}
 

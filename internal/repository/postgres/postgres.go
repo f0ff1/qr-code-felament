@@ -4,6 +4,10 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log"
+	"net/url"
+	"os"
+	"strings"
 	"time"
 
 	"filamenttracker/internal/domain"
@@ -18,20 +22,72 @@ import (
 )
 
 func Open(dsn string) (*sql.DB, error) {
+	if strings.TrimSpace(dsn) == "" {
+		return nil, fmt.Errorf("empty database DSN")
+	}
+	dsn = normalizeDSN(dsn)
+
 	db, err := sql.Open("postgres", dsn)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
-	if err := db.Ping(); err != nil {
-		_ = db.Close()
-		return nil, err
-	}
+
 	db.SetMaxOpenConns(25)
 	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(1 * time.Minute)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	if err := db.PingContext(ctx); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ping postgres: %w", err)
+	}
+
+	stats := db.Stats()
+	log.Printf("postgres connected host=%s max_open=%d open=%d idle=%d", redactedHost(dsn), stats.MaxOpenConnections, stats.OpenConnections, stats.Idle)
 	return db, nil
 }
 
+func normalizeDSN(dsn string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil || parsed.Scheme == "" {
+		return dsn
+	}
+	query := parsed.Query()
+	if query.Get("sslmode") == "" {
+		host := parsed.Hostname()
+		if host == "localhost" || host == "127.0.0.1" || host == "postgres" {
+			query.Set("sslmode", "disable")
+		} else {
+			query.Set("sslmode", "require")
+		}
+		parsed.RawQuery = query.Encode()
+		return parsed.String()
+	}
+	return dsn
+}
+
+func redactedHost(dsn string) string {
+	parsed, err := url.Parse(dsn)
+	if err != nil || parsed.Host == "" {
+		return "(unparsed)"
+	}
+	return parsed.Host
+}
+
+func sqlDebug() bool {
+	v := strings.ToLower(strings.TrimSpace(os.Getenv("SQL_DEBUG")))
+	return v == "1" || v == "true" || v == "yes"
+}
+
 func Migrate(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin migration: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
 	stmts := []string{
 		`CREATE TABLE IF NOT EXISTS spools (
 			id UUID PRIMARY KEY,
@@ -88,10 +144,17 @@ func Migrate(db *sql.DB) error {
 		)`,
 	}
 	for _, stmt := range stmts {
-		if _, err := db.Exec(stmt); err != nil {
+		if sqlDebug() {
+			log.Printf("sql migrate: %s", stmt)
+		}
+		if _, err := tx.Exec(stmt); err != nil {
 			return fmt.Errorf("run migration: %w", err)
 		}
 	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit migration: %w", err)
+	}
+	log.Printf("postgres migrations applied, pool open=%d idle=%d", db.Stats().OpenConnections, db.Stats().Idle)
 	return nil
 }
 
