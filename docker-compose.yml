@@ -1,0 +1,70 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: filament-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: filament
+      POSTGRES_USER: filament
+      POSTGRES_PASSWORD: filament
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U filament -d filament"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/migrations:/docker-entrypoint-initdb.d:ro
+
+  redis:
+    image: redis:7-alpine
+    container_name: filament-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    volumes:
+      - redis_data:/data
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: filament-app
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://filament:filament@postgres:5432/filament?sslmode=disable
+      REDIS_ADDR: redis:6379
+      PORT: "8080"
+    command:
+      - sh
+      - -c
+      - |
+        until pg_isready -h postgres -p 5432 -U filament; do
+          echo "waiting for postgres..."
+          sleep 2
+        done
+        until redis-cli -h redis -p 6379 ping | grep -q PONG; do
+          echo "waiting for redis..."
+          sleep 2
+        done
+        /app/app
+    ports:
+      - "8080:8080"
+
+volumes:
+  postgres_data:
+  redis_data:

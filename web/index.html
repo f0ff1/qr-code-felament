@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0d1117" />
+    <title>Filament Tracker</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/assets/styles.css" />
+  </head>
+  <body>
+    <div class="page-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">F</div>
+          <div>
+            <div class="brand-label">Filament</div>
+            <strong>Tracker</strong>
+          </div>
+        </div>
+
+        <nav class="nav">
+          <button class="nav-item active" data-view="overview">
+            <span class="nav-icon">◫</span>
+            Обзор
+          </button>
+          <button class="nav-item" data-view="inventory">
+            <span class="nav-icon">◎</span>
+            Склад
+          </button>
+          <button class="nav-item" data-view="printers">
+            <span class="nav-icon">◌</span>
+            Принтеры
+          </button>
+          <button class="nav-item" data-view="products">
+            <span class="nav-icon">✦</span>
+            Продукты
+          </button>
+          <button class="nav-item" data-view="jobs">
+            <span class="nav-icon">⏱</span>
+            Задачи
+          </button>
+        </nav>
+
+        <div class="status-panel">
+          <div class="panel-label">Система</div>
+          <div class="status-row">
+            <span class="status-dot online"></span>
+            Синхронизация в реальном времени
+          </div>
+          <div class="status-row muted">
+            <span class="status-dot partial"></span>
+            <span id="alertCount">0 уведомлений</span>
+          </div>
+        </div>
+      </aside>
+
+      <main class="main-panel">
+        <header class="topbar">
+          <div>
+            <div class="eyebrow">Панель управления</div>
+            <h1>Обзор материалов</h1>
+          </div>
+
+          <div class="topbar-tools">
+            <label class="search-wrap">
+              <span class="search-icon">⌕</span>
+              <input id="searchInput" type="text" placeholder="Поиск катушки, материала, QR..." />
+            </label>
+            <button id="refreshButton" class="primary-btn">Обновить</button>
+          </div>
+        </header>
+
+        <section class="summary-grid view-panel active" data-view-panel="overview">
+          <article class="summary-card accent">
+            <div class="summary-top">
+              <span class="summary-icon">◎</span>
+              <span>Катушки</span>
+            </div>
+            <strong id="totalSpools">0</strong>
+            <small>Активные запасы</small>
+          </article>
+
+          <article class="summary-card warning">
+            <div class="summary-top">
+              <span class="summary-icon">⚠</span>
+              <span>Мало на складе</span>
+            </div>
+            <strong id="lowStockCount">0</strong>
+            <small>Нужна дозаправка</small>
+          </article>
+
+          <article class="summary-card success">
+            <div class="summary-top">
+              <span class="summary-icon">◉</span>
+              <span>Печать</span>
+            </div>
+            <strong id="activePrints">0</strong>
+            <small>Задачи в работе</small>
+          </article>
+
+          <article class="summary-card neutral">
+            <div class="summary-top">
+              <span class="summary-icon">◌</span>
+              <span>Принтеры</span>
+            </div>
+            <strong id="printerCount">0</strong>
+            <small>Подключены</small>
+          </article>
+        </section>
+
+        <section class="toolbar-row view-panel active" data-view-panel="overview">
+          <div id="filterGroup" class="chip-group" aria-label="Фильтры">
+            <button class="chip active" data-filter="all">Все</button>
+            <button class="chip" data-filter="low">Мало на складе</button>
+            <button class="chip" data-filter="available">Доступно</button>
+            <button class="chip" data-filter="printing">Печать</button>
+            <button class="chip" data-filter="completed">Завершенные</button>
+          </div>
+
+          <div class="toolbar-meta">
+            <span class="meta-pill">Обновлено <b id="updatedAt">только что</b></span>
+          </div>
+        </section>
+
+        <section class="view-panel active overview-panel" data-view-panel="overview">
+          <div class="overview-grid">
+            <div class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Обзор</div>
+                  <h2>Катушки</h2>
+                </div>
+              </div>
+              <div id="overviewSpoolList" class="mini-list"></div>
+            </div>
+
+            <div class="panel">
+              <div class="panel-head compact">
+                <div>
+                  <div class="panel-kicker">Обзор</div>
+                  <h2>Активные печати</h2>
+                </div>
+              </div>
+              <div id="overviewJobList" class="mini-list"></div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view-panel hidden inventory-view" data-view-panel="inventory">
+          <div class="panel table-panel inventory-panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-kicker">Склад</div>
+                <h2>Список катушек</h2>
+              </div>
+              <button class="ghost-btn" id="exportButton">Экспорт</button>
+            </div>
+
+            <div class="table-wrap">
+              <table class="inventory-table">
+                <thead>
+                  <tr>
+                    <th>Материал</th>
+                    <th>Цвет</th>
+                    <th>Производитель</th>
+                    <th>Остаток на д.н.</th>
+                    <th>Остаток в буд.</th>
+                    <th>QR</th>
+                    <th>Статус</th>
+                  </tr>
+                </thead>
+                <tbody id="spoolTableBody"></tbody>
+              </table>
+            </div>
+
+            <form id="spoolForm" class="data-form">
+              <div class="form-header">
+                <h3>Добавить катушку</h3>
+              </div>
+
+              <div class="form-grid">
+                <label>
+                  <span>Материал</span>
+                  <input name="material" type="text" value="PLA" required />
+                </label>
+                <label>
+                  <span>Цвет</span>
+                  <input name="color" type="text" value="Black" required />
+                </label>
+                <label>
+                  <span>Производитель</span>
+                  <input name="manufacturer" type="text" value="Bambu" required />
+                </label>
+                <label>
+                  <span>Начальный вес, г</span>
+                  <input name="initialWeight" type="number" min="1" value="1000" required />
+                </label>
+                <label>
+                  <span>Цена</span>
+                  <input name="price" type="number" min="0" step="0.01" value="29.99" required />
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Создать катушку</button>
+              </div>
+
+              <div id="spoolFormStatus" class="form-status"></div>
+            </form>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" data-view-panel="printers">
+          <div class="panel side-stack">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Ресурсы</div>
+                <h2>Принтеры</h2>
+              </div>
+            </div>
+            <div id="printerList" class="printer-list"></div>
+
+            <form id="printerForm" class="data-form">
+              <div class="form-header">
+                <h3>Добавить принтер</h3>
+              </div>
+
+              <div class="form-grid">
+                <label>
+                  <span>Название</span>
+                  <input name="name" type="text" value="Prusa MK4" required />
+                </label>
+                <label>
+                  <span>Модель</span>
+                  <input name="model" type="text" value="MK4" required />
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Добавить принтер</button>
+              </div>
+
+              <div id="printerFormStatus" class="form-status"></div>
+            </form>
+          </div>
+        </section>
+
+        <section class="view-panel hidden" data-view-panel="products">
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Продукция</div>
+                <h2>Продукты</h2>
+              </div>
+            </div>
+            <div id="productList" class="product-list"></div>
+
+            <form id="productForm" class="data-form">
+              <div class="form-header">
+                <h3>Добавить продукт</h3>
+              </div>
+
+              <div class="form-grid">
+                <label>
+                  <span>Название</span>
+                  <input name="name" type="text" value="Кронштейн A" required />
+                </label>
+                <label>
+                  <span>Катушка</span>
+                  <select name="spoolId" id="productSpoolId" required></select>
+                </label>
+                <label>
+                  <span>Оценочный вес, г</span>
+                  <input name="estimatedWeight" type="number" min="1" value="250" required />
+                </label>
+                <label>
+                  <span>Часы</span>
+                  <input name="estimatedHours" type="number" min="0" max="99" value="2" required />
+                </label>
+                <label>
+                  <span>Минуты</span>
+                  <input name="estimatedMinutes" type="number" min="0" max="59" value="30" required />
+                </label>
+                <input type="hidden" name="estimatedPrintTime" value="2h30m" />
+                <label class="form-span-2">
+                  <span>Описание</span>
+                  <textarea name="description" rows="3" required>Кронштейн для корпуса</textarea>
+                </label>
+                <div class="form-span-2 billing-block">
+                  <span>Тип потребителя</span>
+                  <div class="billing-options">
+                    <label class="billing-option">
+                      <input type="checkbox" class="billing-toggle" name="billingType" value="person" checked />
+                      <span>Физ. лицо</span>
+                    </label>
+                    <label class="billing-option">
+                      <input type="checkbox" class="billing-toggle" name="billingType" value="legal" />
+                      <span>Юр. лицо</span>
+                    </label>
+                  </div>
+                </div>
+                <div class="form-span-2 cost-preview-block">
+                  <span>Себестоимость</span>
+                  <strong id="productCostPreview">0.00 ₽</strong>
+                  <input type="hidden" name="price" value="0" />
+                </div>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Создать продукт</button>
+              </div>
+
+              <div id="productFormStatus" class="form-status"></div>
+            </form>
+          </div>
+        </section>
+
+        <section class="bottom-grid view-panel hidden" data-view-panel="jobs">
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Операции</div>
+                <h2>Последние задачи</h2>
+              </div>
+            </div>
+            <div id="jobList" class="job-list"></div>
+
+            <form id="jobForm" class="data-form">
+              <div class="form-header">
+                <h3>Создать задачу</h3>
+              </div>
+
+              <div class="form-grid">
+                <label>
+                  <span>Принтер</span>
+                  <select name="printerId" id="jobPrinterId" required></select>
+                </label>
+                <label>
+                  <span>Продукт</span>
+                  <select name="productId" id="jobProductId" required></select>
+                </label>
+                <label class="form-span-2">
+                  <span>Катушка</span>
+                  <select name="spoolId" id="jobSpoolId" required></select>
+                </label>
+              </div>
+
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Запустить печать</button>
+              </div>
+
+              <div id="jobFormStatus" class="form-status"></div>
+            </form>
+          </div>
+
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Поток</div>
+                <h2>Активность</h2>
+              </div>
+            </div>
+            <ul id="activityList" class="activity-list"></ul>
+          </div>
+        </section>
+      </main>
+    </div>
+
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

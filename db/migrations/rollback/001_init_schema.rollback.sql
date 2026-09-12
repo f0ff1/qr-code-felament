@@ -1,0 +1,9 @@
+BEGIN;
+
+DROP TABLE IF EXISTS inventory_transactions;
+DROP TABLE IF EXISTS print_jobs;
+DROP TABLE IF EXISTS products;
+DROP TABLE IF EXISTS printers;
+DROP TABLE IF EXISTS spools;
+
+COMMIT;
