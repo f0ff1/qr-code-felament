@@ -907,8 +907,15 @@ func (s *Service) finalizeComplete(ctx context.Context, job *printjobdomain.Prin
 
 func (s *Service) finalizeCancelOrFail(ctx context.Context, job *printjobdomain.PrintJob, failed bool) error {
 	if job.ConsumedWeight > 0 && job.SpoolID != uuid.Nil {
-		_ = s.refundFilament(ctx, job.SpoolID, job.ConsumedWeight)
-		job.ConsumedWeight = 0
+		unused := unusedReservedGrams(*job)
+		if unused > 0 {
+			_ = s.refundFilament(ctx, job.SpoolID, unused)
+		}
+		used := job.ConsumedWeight - unused
+		if used < 0 {
+			used = 0
+		}
+		job.ConsumedWeight = used
 	}
 	if failed {
 		job.Fail()
@@ -917,6 +924,29 @@ func (s *Service) finalizeCancelOrFail(ctx context.Context, job *printjobdomain.
 	}
 	job.IsDraft = false
 	return nil
+}
+
+// unusedReservedGrams is the reserved filament not yet extruded (by job progress %).
+func unusedReservedGrams(job printjobdomain.PrintJob) int {
+	reserved := job.ConsumedWeight
+	if reserved <= 0 {
+		return 0
+	}
+	progress := job.Progress
+	if progress < 0 {
+		progress = 0
+	}
+	if progress > 100 {
+		progress = 100
+	}
+	used := int(math.Round(float64(reserved) * progress / 100.0))
+	if used < 0 {
+		used = 0
+	}
+	if used > reserved {
+		used = reserved
+	}
+	return reserved - used
 }
 
 func (s *Service) reserveFilament(ctx context.Context, spool *spooldomain.Spool, weight int) error {
@@ -971,8 +1001,11 @@ func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	}
 
 	if !isTerminal(job.Status) && job.ConsumedWeight > 0 {
-		if err := s.refundFilament(ctx, job.SpoolID, job.ConsumedWeight); err != nil {
-			return err
+		unused := unusedReservedGrams(job)
+		if unused > 0 {
+			if err := s.refundFilament(ctx, job.SpoolID, unused); err != nil {
+				return err
+			}
 		}
 	}
 

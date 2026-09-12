@@ -500,6 +500,74 @@ func TestSyncFromBambuReservesMissingConsumedWeight(t *testing.T) {
 	}
 }
 
+func TestCancelRefundsOnlyUnusedFilament(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 40)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, _, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-cancel-partial",
+		FileName:        "part.gcode",
+		Progress:        0.5,
+		Status:          printjobdomain.StatusPrinting,
+		EstimatedWeight: 200,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 800 {
+		t.Fatalf("after reserve = %d, want 800", updatedSpool.CurrentWeight)
+	}
+
+	// ~0.5% of 200g ≈ 1g used → refund 199 → spool 999
+	job, _, err = service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-cancel-partial",
+		FileName:        "part.gcode",
+		Progress:        0.5,
+		Status:          printjobdomain.StatusCancelled,
+		EstimatedWeight: 200,
+		MaterialHint:    "Generic PLA",
+		ColorHint:       "Charcoal",
+		BrandHint:       "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if job.Status != printjobdomain.StatusCancelled {
+		t.Fatalf("status = %s, want cancelled", job.Status)
+	}
+	if job.ConsumedWeight != 1 {
+		t.Fatalf("consumed after cancel = %d, want 1 (used portion)", job.ConsumedWeight)
+	}
+	updatedSpool, _ = spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight != 999 {
+		t.Fatalf("after cancel remaining = %d, want 999", updatedSpool.CurrentWeight)
+	}
+}
+
+func TestUnusedReservedGrams(t *testing.T) {
+	if got := unusedReservedGrams(printjobdomain.PrintJob{ConsumedWeight: 200, Progress: 50}); got != 100 {
+		t.Fatalf("50%% of 200 => unused %d, want 100", got)
+	}
+	if got := unusedReservedGrams(printjobdomain.PrintJob{ConsumedWeight: 200, Progress: 0}); got != 200 {
+		t.Fatalf("0%% => unused %d, want 200", got)
+	}
+	if got := unusedReservedGrams(printjobdomain.PrintJob{ConsumedWeight: 200, Progress: 100}); got != 0 {
+		t.Fatalf("100%% => unused %d, want 0", got)
+	}
+}
+
 func TestNormalizeMaterialGenericPLA(t *testing.T) {
 	if got := normalizeMaterial("Generic PLA"); got != "PLA" {
 		t.Fatalf("Generic PLA => %s, want PLA", got)
