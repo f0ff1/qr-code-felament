@@ -24,7 +24,7 @@ type ColorFamily struct {
 var Catalog = []ColorFamily{
 	{
 		Aliases:    []string{"чёрный", "черный", "black", "blk"},
-		BambuNames: []string{"black", "charcoal", "matte charcoal"},
+		BambuNames: []string{"black", "charcoal", "matte charcoal", "charcoai"},
 		Hex:        []string{"000000", "161616", "0A0A0A", "1A1A1A"},
 	},
 	{

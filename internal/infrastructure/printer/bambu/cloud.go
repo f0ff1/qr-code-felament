@@ -141,8 +141,16 @@ func snapshotFromCloudData(data bambicloud.Data, weightHint int, materialHint, c
 	}
 
 	material := materialHint
+	brand := ""
 	if material == "" {
 		material = data.VtTray.TrayType
+	}
+	if data.VtTray.TraySubBrands != "" {
+		brand = data.VtTray.TraySubBrands
+	}
+	// Compose "Generic PLA" style hint when brand is known separately.
+	if brand != "" && material != "" && !strings.Contains(strings.ToLower(material), strings.ToLower(brand)) {
+		material = strings.TrimSpace(brand + " " + material)
 	}
 	color := colorHint
 	if color == "" && (data.VtTray.TrayColor.R != 0 || data.VtTray.TrayColor.G != 0 || data.VtTray.TrayColor.B != 0) {
@@ -157,6 +165,7 @@ func snapshotFromCloudData(data bambicloud.Data, weightHint int, materialHint, c
 		RemainingMin:    data.RemainingPrintTime,
 		MaterialHint:    material,
 		ColorHint:       color,
+		BrandHint:       brand,
 		EstimatedWeight: weightHint,
 	}, active
 }
@@ -244,6 +253,9 @@ func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mq
 	}
 	if mqtt.ColorHint != "" {
 		snap.ColorHint = mqtt.ColorHint
+	}
+	if mqtt.BrandHint != "" {
+		snap.BrandHint = mqtt.BrandHint
 	}
 	if mqtt.EstimatedWeight > 0 {
 		snap.EstimatedWeight = mqtt.EstimatedWeight

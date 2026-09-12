@@ -51,6 +51,7 @@ type BambuSnapshot struct {
 	EstimatedWeight int
 	MaterialHint    string
 	ColorHint       string
+	BrandHint       string
 }
 
 func NewService(repo PrintJobRepository, spoolRepo spooldomain.Repository, productRepo ProductRepository, printerRepo PrinterRepository) *Service {
@@ -283,7 +284,7 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 		}
 	}
 
-	materialHint := normalizeMaterial(snap.MaterialHint)
+	materialHint, brandHint := parseFilamentHint(snap.MaterialHint, snap.BrandHint)
 	colorAliases := colorAliases(snap.ColorHint)
 
 	spools, err := s.spoolRepo.List(ctx)
@@ -307,6 +308,13 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 					continue
 				}
 			}
+			if brandHint != "" {
+				if manufacturersMatch(spool.Manufacturer, brandHint) {
+					score += 2
+				} else {
+					continue
+				}
+			}
 			if printer.DefaultSpoolID != uuid.Nil && spool.ID == printer.DefaultSpoolID {
 				score += 1
 			}
@@ -315,7 +323,10 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 				bestID = spool.ID
 			}
 		}
-		if bestID != uuid.Nil && bestScore >= 2 {
+		// Material+color (4) or material+brand (4) is enough; prefer all three (6).
+		if bestID != uuid.Nil && bestScore >= 4 {
+			spoolID = bestID
+		} else if bestID != uuid.Nil && materialHint != "" && len(colorAliases) == 0 && brandHint == "" && bestScore >= 2 {
 			spoolID = bestID
 		}
 	}
@@ -326,7 +337,7 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 		}
 	}
 
-	// Auto-consume when warehouse spool matched by cloud material (+ color when present).
+	// Auto-consume when warehouse spool matched by cloud material (+ color/brand when present).
 	if spoolID != uuid.Nil && (materialHint != "" || productID != uuid.Nil) {
 		draft = false
 	}
@@ -336,24 +347,99 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 	return productID, spoolID, estimated, draft
 }
 
-func normalizeMaterial(raw string) string {
-	raw = strings.ToUpper(strings.TrimSpace(raw))
-	raw = strings.ReplaceAll(raw, " ", "")
+func parseFilamentHint(materialRaw, brandRaw string) (material, brand string) {
+	material = normalizeMaterial(materialRaw)
+	brand = normalizeBrand(brandRaw)
+	if brand == "" {
+		brand = extractBrand(materialRaw)
+	}
+	if brand == "" {
+		brand = extractBrand(brandRaw)
+	}
+	return material, brand
+}
+
+func extractBrand(raw string) string {
+	lower := strings.ToLower(strings.TrimSpace(raw))
+	if lower == "" {
+		return ""
+	}
 	switch {
-	case strings.HasPrefix(raw, "PLA"):
-		return "PLA"
-	case strings.HasPrefix(raw, "PETG"):
-		return "PETG"
-	case strings.HasPrefix(raw, "ABS"):
-		return "ABS"
-	case strings.HasPrefix(raw, "ASA"):
-		return "ASA"
-	case strings.HasPrefix(raw, "TPU"):
-		return "TPU"
-	case strings.HasPrefix(raw, "PC"):
-		return "PC"
+	case strings.Contains(lower, "bambu lab"), strings.Contains(lower, "bambulab"), strings.HasPrefix(lower, "bambu"):
+		return "bambu"
+	case strings.Contains(lower, "generic"):
+		return "generic"
+	case strings.Contains(lower, "polymaker"):
+		return "polymaker"
+	case strings.Contains(lower, "overture"):
+		return "overture"
+	case strings.Contains(lower, "esun"):
+		return "esun"
+	case strings.Contains(lower, "sunlu"):
+		return "sunlu"
+	default:
+		return ""
+	}
+}
+
+func normalizeBrand(raw string) string {
+	raw = strings.ToLower(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, "-", " ")
+	raw = strings.Join(strings.Fields(raw), " ")
+	switch raw {
+	case "":
+		return ""
+	case "bambu lab", "bambulab", "bambu":
+		return "bambu"
+	case "generic":
+		return "generic"
+	case "polymaker":
+		return "polymaker"
+	case "overture":
+		return "overture"
+	case "esun":
+		return "esun"
+	case "sunlu":
+		return "sunlu"
 	default:
 		return raw
+	}
+}
+
+func manufacturersMatch(spoolManufacturer, brandHint string) bool {
+	a := normalizeBrand(spoolManufacturer)
+	b := normalizeBrand(brandHint)
+	if a == "" || b == "" {
+		return false
+	}
+	return a == b
+}
+
+func normalizeMaterial(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, "-", "")
+	raw = strings.ReplaceAll(raw, "_", " ")
+	// Cloud / Handy often send "Generic PLA", "Bambu PLA Matte", etc.
+	fields := strings.Fields(raw)
+	joined := strings.Join(fields, "")
+
+	switch {
+	case strings.Contains(joined, "PETG"):
+		return "PETG"
+	case strings.Contains(joined, "PLA"):
+		return "PLA"
+	case strings.Contains(joined, "ABS"):
+		return "ABS"
+	case strings.Contains(joined, "ASA"):
+		return "ASA"
+	case strings.Contains(joined, "TPU"):
+		return "TPU"
+	case strings.Contains(joined, "PC"):
+		return "PC"
+	case strings.HasPrefix(joined, "PLA"):
+		return "PLA"
+	default:
+		return joined
 	}
 }
 

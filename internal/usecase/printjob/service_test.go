@@ -78,7 +78,7 @@ func TestConfirmDraftReservesFilament(t *testing.T) {
 	}
 }
 
-func TestSyncFromBambuMatchesFilamentByMaterialAndColor(t *testing.T) {
+func TestSyncFromBambuMatchesGenericPLACharcoal(t *testing.T) {
 	spoolRepo := memory.NewRepository()
 	printerRepo := memory.NewPrinterRepository()
 	productRepo := memory.NewProductRepository()
@@ -87,30 +87,63 @@ func TestSyncFromBambuMatchesFilamentByMaterialAndColor(t *testing.T) {
 
 	printer := printerdomain.NewPrinter("A1", "A1")
 	_ = printerRepo.Create(context.Background(), printer)
-	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "Чёрный", "Bambu", 1000, 30)
+	// Warehouse: name ignored, manufacturer Generic, PLA, чёрный
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "Generic", 1000, 30)
 	_ = spoolRepo.Create(context.Background(), spool)
 
 	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
-		ExternalTaskID:  "task-pla-black",
-		FileName:        "benchy.gcode",
-		Progress:        8,
+		ExternalTaskID:  "task-generic-pla",
+		FileName:        "part.gcode",
+		Progress:        10,
 		Status:          printjobdomain.StatusPrinting,
-		MaterialHint:    "PLA",
+		MaterialHint:    "Generic PLA",
 		ColorHint:       "Charcoal",
-		EstimatedWeight: 90,
-		RemainingMin:    60,
+		BrandHint:       "Generic",
+		EstimatedWeight: 80,
 	})
 	if err != nil {
 		t.Fatalf("SyncFromBambu: %v", err)
 	}
-	if !created || job.IsDraft {
-		t.Fatalf("expected auto-matched non-draft job, got draft=%v created=%v", job.IsDraft, created)
+	if !created || job.IsDraft || job.SpoolID != spool.ID {
+		t.Fatalf("expected matched Generic PLA + Charcoal, got draft=%v spool=%s created=%v", job.IsDraft, job.SpoolID, created)
 	}
-	if job.SpoolID != spool.ID {
-		t.Fatalf("spool = %s, want %s", job.SpoolID, spool.ID)
+}
+
+func TestSyncFromBambuSkipsWrongManufacturer(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "чёрный", "eSUN", 1000, 30)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, _, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID: "task-wrong-brand",
+		FileName:       "part.gcode",
+		Progress:       10,
+		Status:         printjobdomain.StatusPrinting,
+		MaterialHint:   "Generic PLA",
+		ColorHint:      "Charcoal",
+		BrandHint:      "Generic",
+	})
+	if err != nil {
+		t.Fatal(err)
 	}
-	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
-	if updatedSpool.CurrentWeight >= 1000 {
-		t.Fatalf("expected filament reserved, weight=%d", updatedSpool.CurrentWeight)
+	if !job.IsDraft {
+		t.Fatalf("eSUN spool must not match Generic brand, got draft=%v", job.IsDraft)
+	}
+}
+
+func TestNormalizeMaterialGenericPLA(t *testing.T) {
+	if got := normalizeMaterial("Generic PLA"); got != "PLA" {
+		t.Fatalf("Generic PLA => %s, want PLA", got)
+	}
+	material, brand := parseFilamentHint("Generic PLA", "")
+	if material != "PLA" || brand != "generic" {
+		t.Fatalf("parseFilamentHint => %s/%s", material, brand)
 	}
 }

@@ -66,16 +66,18 @@ type printTelemetry struct {
 		SubtaskName     string `json:"subtask_name"`
 		TaskID          string `json:"task_id"`
 		VtTray          struct {
-			TrayColor string `json:"tray_color"`
-			TrayType  string `json:"tray_type"`
+			TrayColor     string `json:"tray_color"`
+			TrayType      string `json:"tray_type"`
+			TraySubBrands string `json:"tray_sub_brands"`
 		} `json:"vt_tray"`
 		Ams struct {
 			TrayNow string `json:"tray_now"`
 			Ams     []struct {
 				Tray []struct {
-					ID        string `json:"id"`
-					TrayColor string `json:"tray_color"`
-					TrayType  string `json:"tray_type"`
+					ID            string `json:"id"`
+					TrayColor     string `json:"tray_color"`
+					TrayType      string `json:"tray_type"`
+					TraySubBrands string `json:"tray_sub_brands"`
 				} `json:"tray"`
 			} `json:"ams"`
 		} `json:"ams"`
@@ -411,7 +413,10 @@ func snapshotFromTelemetry(state printTelemetry) (printjobusecase.BambuSnapshot,
 		taskID = fileName + ":" + print.GcodeStartTime
 	}
 
-	material, color := trayHints(print)
+	material, color, brand := trayHints(state.Print)
+	if brand != "" && material != "" && !strings.Contains(strings.ToLower(material), strings.ToLower(brand)) {
+		material = strings.TrimSpace(brand + " " + material)
+	}
 	return printjobusecase.BambuSnapshot{
 		ExternalTaskID: taskID,
 		FileName:       fileName,
@@ -420,6 +425,7 @@ func snapshotFromTelemetry(state printTelemetry) (printjobusecase.BambuSnapshot,
 		RemainingMin:   print.McRemainingTime,
 		MaterialHint:   material,
 		ColorHint:      color,
+		BrandHint:      brand,
 	}, active
 }
 
@@ -433,24 +439,27 @@ func trayHints(print struct {
 	SubtaskName     string `json:"subtask_name"`
 	TaskID          string `json:"task_id"`
 	VtTray          struct {
-		TrayColor string `json:"tray_color"`
-		TrayType  string `json:"tray_type"`
+		TrayColor     string `json:"tray_color"`
+		TrayType      string `json:"tray_type"`
+		TraySubBrands string `json:"tray_sub_brands"`
 	} `json:"vt_tray"`
 	Ams struct {
 		TrayNow string `json:"tray_now"`
 		Ams     []struct {
 			Tray []struct {
-				ID        string `json:"id"`
-				TrayColor string `json:"tray_color"`
-				TrayType  string `json:"tray_type"`
+				ID            string `json:"id"`
+				TrayColor     string `json:"tray_color"`
+				TrayType      string `json:"tray_type"`
+				TraySubBrands string `json:"tray_sub_brands"`
 			} `json:"tray"`
 		} `json:"ams"`
 	} `json:"ams"`
-}) (material, color string) {
+}) (material, color, brand string) {
 	material = print.VtTray.TrayType
 	color = print.VtTray.TrayColor
+	brand = print.VtTray.TraySubBrands
 	if print.Ams.TrayNow == "" {
-		return material, color
+		return material, color, brand
 	}
 	idx, _ := strconv.Atoi(print.Ams.TrayNow)
 	for _, unit := range print.Ams.Ams {
@@ -463,11 +472,14 @@ func trayHints(print struct {
 				if t.TrayColor != "" {
 					color = t.TrayColor
 				}
-				return material, color
+				if t.TraySubBrands != "" {
+					brand = t.TraySubBrands
+				}
+				return material, color, brand
 			}
 		}
 	}
-	return material, color
+	return material, color, brand
 }
 
 func mapGcodeState(raw string) (printjobdomain.Status, bool) {
