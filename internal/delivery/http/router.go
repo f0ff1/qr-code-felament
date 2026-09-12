@@ -14,8 +14,10 @@ import (
 
 	"filamenttracker/internal/bootstrap"
 	"filamenttracker/internal/config"
+	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
 	spooldomain "filamenttracker/internal/domain/spool"
+	"filamenttracker/internal/infrastructure/printer/bambu"
 	"filamenttracker/internal/infrastructure/printer/mock"
 	"filamenttracker/internal/repository/memory"
 	postgresrepo "filamenttracker/internal/repository/postgres"
@@ -162,6 +164,39 @@ func jsonError(w http.ResponseWriter, message string, status int) {
 	})
 }
 
+func printerJSON(printer printerdomain.Printer) map[string]any {
+	item := map[string]any{
+		"id":            printer.ID.String(),
+		"name":          printer.Name,
+		"model":         printer.Model,
+		"status":        string(printer.Status),
+		"lan_enabled":   printer.LANEnabled,
+		"lan_host":      printer.LANHost,
+		"lan_serial":    printer.LANSerial,
+		"cloud_enabled": printer.CloudEnabled,
+		"cloud_region":  printer.CloudRegion,
+		"cloud_email":   printer.CloudEmail,
+		"cloud_linked":  printer.CloudLinked(),
+		"connection":    string(printer.ConnectionMode()),
+		"needs_verification": printer.CloudEnabled && !printer.CloudLinked(),
+	}
+	if printer.DefaultSpoolID != uuid.Nil {
+		item["default_spool_id"] = printer.DefaultSpoolID.String()
+	}
+	return item
+}
+
+type notifyBridge struct {
+	svc *notificationusecase.Service
+}
+
+func (n notifyBridge) Publish(eventType, message string, payload map[string]any) {
+	if n.svc == nil {
+		return
+	}
+	n.svc.Publish(eventType, message, payload)
+}
+
 func NewRouter() http.Handler {
 	mux := http.NewServeMux()
 	runtime := bootstrap.NewRuntime()
@@ -212,6 +247,9 @@ func NewRouter() http.Handler {
 		}
 	}()
 	notifier := notificationusecase.NewService()
+	bambuMonitor := bambu.NewMonitor(printerRepo, printJobService, notifyBridge{notifier})
+	bambuMonitor.Start(context.Background())
+
 	demoCtx, demoCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	ensureDemoData(demoCtx, spoolService, printerService, productService, printJobService)
 	demoCancel()
@@ -334,44 +372,152 @@ func NewRouter() http.Handler {
 			}
 			payload := make([]map[string]any, 0, len(printers))
 			for _, printer := range printers {
-				payload = append(payload, map[string]any{
-					"id":     printer.ID.String(),
-					"name":   printer.Name,
-					"model":  printer.Model,
-					"status": string(printer.Status),
-				})
+				payload = append(payload, printerJSON(printer))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(payload)
 		case http.MethodPost:
 			var input struct {
-				Name  string `json:"name"`
-				Model string `json:"model"`
+				Name            string `json:"name"`
+				Model           string `json:"model"`
+				LANHost         string `json:"lanHost"`
+				LANSerial       string `json:"lanSerial"`
+				LANAccessCode   string `json:"lanAccessCode"`
+				LANEnabled      bool   `json:"lanEnabled"`
+				CloudEnabled    bool   `json:"cloudEnabled"`
+				CloudEmail      string `json:"cloudEmail"`
+				CloudPassword   string `json:"cloudPassword"`
+				CloudToken      string `json:"cloudToken"`
+				CloudRegion     string `json:"cloudRegion"`
+				CloudVerifyCode string `json:"cloudVerifyCode"`
+				DefaultSpoolID  string `json:"defaultSpoolId"`
 			}
 			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
 				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
-			entity, err := printerService.Create(context.Background(), input.Name, input.Model)
+			createInput := printerusecase.CreateInput{
+				Name:            input.Name,
+				Model:           input.Model,
+				LANHost:         input.LANHost,
+				LANSerial:       input.LANSerial,
+				LANAccessCode:   input.LANAccessCode,
+				LANEnabled:      input.LANEnabled,
+				CloudEnabled:    input.CloudEnabled,
+				CloudEmail:      input.CloudEmail,
+				CloudPassword:   input.CloudPassword,
+				CloudToken:      input.CloudToken,
+				CloudRegion:     input.CloudRegion,
+				CloudVerifyCode: input.CloudVerifyCode,
+			}
+			if input.DefaultSpoolID != "" {
+				spoolID, err := uuid.Parse(input.DefaultSpoolID)
+				if err != nil {
+					jsonError(w, "invalid default spool id", http.StatusBadRequest)
+					return
+				}
+				createInput.DefaultSpoolID = spoolID
+			}
+			result, err := printerService.Create(context.Background(), createInput)
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("printer_created", "Printer registered", map[string]any{"printer_id": entity.ID.String(), "status": string(entity.Status)})
+			notifier.Publish("printer_created", "Printer registered", map[string]any{"printer_id": result.ID.String(), "status": string(result.Status)})
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": entity.ID.String(), "status": string(entity.Status)})
+			_ = json.NewEncoder(w).Encode(printerJSON(result))
 		default:
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
 	})
 	mux.HandleFunc("/api/printers/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/printers/")
+		if strings.HasSuffix(path, "/cloud/verify") && r.Method == http.MethodPost {
+			idString := strings.TrimSuffix(path, "/cloud/verify")
+			id, err := uuid.Parse(idString)
+			if err != nil {
+				jsonError(w, "invalid printer id", http.StatusBadRequest)
+				return
+			}
+			var input struct {
+				Code string `json:"code"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				jsonError(w, "invalid payload", http.StatusBadRequest)
+				return
+			}
+			entity, err := printerService.VerifyCloud(context.Background(), id, input.Code)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(printerJSON(entity))
+			return
+		}
+		if strings.HasSuffix(path, "/lan") && r.Method == http.MethodPatch {
+			idString := strings.TrimSuffix(path, "/lan")
+			id, err := uuid.Parse(idString)
+			if err != nil {
+				jsonError(w, "invalid printer id", http.StatusBadRequest)
+				return
+			}
+			var input struct {
+				Name            string `json:"name"`
+				Model           string `json:"model"`
+				LANHost         string `json:"lanHost"`
+				LANSerial       string `json:"lanSerial"`
+				LANAccessCode   string `json:"lanAccessCode"`
+				LANEnabled      bool   `json:"lanEnabled"`
+				CloudEnabled    bool   `json:"cloudEnabled"`
+				CloudEmail      string `json:"cloudEmail"`
+				CloudPassword   string `json:"cloudPassword"`
+				CloudToken      string `json:"cloudToken"`
+				CloudRegion     string `json:"cloudRegion"`
+				CloudVerifyCode string `json:"cloudVerifyCode"`
+				DefaultSpoolID  string `json:"defaultSpoolId"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				jsonError(w, "invalid payload", http.StatusBadRequest)
+				return
+			}
+			updateInput := printerusecase.CreateInput{
+				Name:            input.Name,
+				Model:           input.Model,
+				LANHost:         input.LANHost,
+				LANSerial:       input.LANSerial,
+				LANAccessCode:   input.LANAccessCode,
+				LANEnabled:      input.LANEnabled,
+				CloudEnabled:    input.CloudEnabled,
+				CloudEmail:      input.CloudEmail,
+				CloudPassword:   input.CloudPassword,
+				CloudToken:      input.CloudToken,
+				CloudRegion:     input.CloudRegion,
+				CloudVerifyCode: input.CloudVerifyCode,
+			}
+			if input.DefaultSpoolID != "" {
+				spoolID, err := uuid.Parse(input.DefaultSpoolID)
+				if err != nil {
+					jsonError(w, "invalid default spool id", http.StatusBadRequest)
+					return
+				}
+				updateInput.DefaultSpoolID = spoolID
+			}
+			entity, err := printerService.UpdateLAN(context.Background(), id, updateInput)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(printerJSON(entity))
+			return
+		}
 		if r.Method != http.MethodDelete {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		idString := strings.TrimPrefix(r.URL.Path, "/api/printers/")
-		id, err := uuid.Parse(idString)
+		id, err := uuid.Parse(path)
 		if err != nil {
 			jsonError(w, "invalid printer id", http.StatusBadRequest)
 			return
@@ -464,16 +610,27 @@ func NewRouter() http.Handler {
 			}
 			payload := make([]map[string]any, 0, len(jobs))
 			for _, job := range jobs {
-				payload = append(payload, map[string]any{
-					"id":          job.ID.String(),
-					"printer_id":  job.PrinterID.String(),
-					"product_id":  job.ProductID.String(),
-					"spool_id":    job.SpoolID.String(),
-					"status":      string(job.Status),
-					"progress":    job.Progress,
-					"started_at":  job.StartedAt.Format(time.RFC3339),
-					"finished_at": job.FinishedAt,
-				})
+				item := map[string]any{
+					"id":               job.ID.String(),
+					"printer_id":       job.PrinterID.String(),
+					"status":           string(job.Status),
+					"progress":         job.Progress,
+					"started_at":       job.StartedAt.Format(time.RFC3339),
+					"finished_at":      job.FinishedAt,
+					"source":           string(job.Source),
+					"file_name":        job.FileName,
+					"is_draft":         job.IsDraft,
+					"external_task_id": job.ExternalTaskID,
+					"estimated_weight": job.EstimatedWeight,
+					"consumed_weight":  job.ConsumedWeight,
+				}
+				if job.ProductID != uuid.Nil {
+					item["product_id"] = job.ProductID.String()
+				}
+				if job.SpoolID != uuid.Nil {
+					item["spool_id"] = job.SpoolID.String()
+				}
+				payload = append(payload, item)
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(payload)
@@ -518,6 +675,40 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("/api/print-jobs/", func(w http.ResponseWriter, r *http.Request) {
 		path := strings.TrimPrefix(r.URL.Path, "/api/print-jobs/")
 		parts := strings.Split(path, "/")
+		if len(parts) == 2 && parts[1] == "confirm" && r.Method == http.MethodPost {
+			id, err := uuid.Parse(parts[0])
+			if err != nil {
+				jsonError(w, "invalid job id", http.StatusBadRequest)
+				return
+			}
+			var input struct {
+				ProductID string `json:"productId"`
+				SpoolID   string `json:"spoolId"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				jsonError(w, "invalid payload", http.StatusBadRequest)
+				return
+			}
+			productID, err := uuid.Parse(input.ProductID)
+			if err != nil {
+				jsonError(w, "invalid product id", http.StatusBadRequest)
+				return
+			}
+			spoolID, err := uuid.Parse(input.SpoolID)
+			if err != nil {
+				jsonError(w, "invalid spool id", http.StatusBadRequest)
+				return
+			}
+			job, err := printJobService.ConfirmDraft(context.Background(), id, productID, spoolID)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			notifier.Publish("print_started", "Черновик печати подтверждён", map[string]any{"job_id": job.ID.String()})
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": job.ID.String(), "status": string(job.Status), "is_draft": job.IsDraft})
+			return
+		}
 		if len(parts) != 2 {
 			if r.Method == http.MethodDelete {
 				id, err := uuid.Parse(path)
@@ -793,11 +984,11 @@ func ensureDemoData(ctx context.Context, spoolService *spoolusecase.Service, pri
 		return
 	}
 
-	printerA, err := printerService.Create(ctx, "Prusa MK4", "MK4")
+	printerA, err := printerService.Create(ctx, printerusecase.CreateInput{Name: "Prusa MK4", Model: "MK4"})
 	if err == nil {
 		_ = printerA
 	}
-	printerB, err := printerService.Create(ctx, "Bambu X1", "X1")
+	printerB, err := printerService.Create(ctx, printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err == nil {
 		_ = printerB
 	}

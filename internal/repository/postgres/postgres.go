@@ -143,6 +143,23 @@ func Migrate(db *sql.DB) error {
 			weight INTEGER NOT NULL,
 			created_at TIMESTAMPTZ NOT NULL
 		)`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS lan_host TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS lan_serial TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS lan_access_code TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS lan_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS default_spool_id UUID`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS cloud_enabled BOOLEAN NOT NULL DEFAULT FALSE`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS cloud_email TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS cloud_password TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS cloud_token TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE printers ADD COLUMN IF NOT EXISTS cloud_region TEXT NOT NULL DEFAULT 'us'`,
+		`ALTER TABLE print_jobs ALTER COLUMN product_id DROP NOT NULL`,
+		`ALTER TABLE print_jobs ALTER COLUMN spool_id DROP NOT NULL`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual'`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS external_task_id TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS file_name TEXT NOT NULL DEFAULT ''`,
+		`ALTER TABLE print_jobs ADD COLUMN IF NOT EXISTS is_draft BOOLEAN NOT NULL DEFAULT FALSE`,
+		`CREATE INDEX IF NOT EXISTS idx_print_jobs_external_task ON print_jobs (printer_id, external_task_id)`,
 	}
 	for _, stmt := range stmts {
 		if sqlDebug() {
@@ -247,7 +264,12 @@ type PrinterRepository struct{ db *sql.DB }
 func NewPrinterRepository(db *sql.DB) *PrinterRepository { return &PrinterRepository{db: db} }
 
 func (r *PrinterRepository) Create(ctx context.Context, p printerdomain.Printer) error {
-	_, err := r.db.ExecContext(ctx, `INSERT INTO printers (id, name, model, status, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6)`, p.ID, p.Name, p.Model, string(p.Status), p.CreatedAt, p.UpdatedAt)
+	var defaultSpool any
+	if p.DefaultSpoolID != uuid.Nil {
+		defaultSpool = p.DefaultSpoolID
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO printers (id, name, model, status, lan_host, lan_serial, lan_access_code, lan_enabled, cloud_enabled, cloud_email, cloud_password, cloud_token, cloud_region, default_spool_id, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		p.ID, p.Name, p.Model, string(p.Status), p.LANHost, p.LANSerial, p.LANAccessCode, p.LANEnabled, p.CloudEnabled, p.CloudEmail, p.CloudPassword, p.CloudToken, p.CloudRegion, defaultSpool, p.CreatedAt, p.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("%w: printer create: %v", domain.ErrConflict, err)
 	}
@@ -256,18 +278,24 @@ func (r *PrinterRepository) Create(ctx context.Context, p printerdomain.Printer)
 
 func (r *PrinterRepository) GetByID(ctx context.Context, id uuid.UUID) (printerdomain.Printer, error) {
 	var p printerdomain.Printer
-	row := r.db.QueryRowContext(ctx, `SELECT id, name, model, status, created_at, updated_at FROM printers WHERE id = $1`, id)
-	if err := row.Scan(&p.ID, &p.Name, &p.Model, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+	var defaultSpool sql.NullString
+	row := r.db.QueryRowContext(ctx, `SELECT id, name, model, status, COALESCE(lan_host,''), COALESCE(lan_serial,''), COALESCE(lan_access_code,''), COALESCE(lan_enabled,false), COALESCE(cloud_enabled,false), COALESCE(cloud_email,''), COALESCE(cloud_password,''), COALESCE(cloud_token,''), COALESCE(cloud_region,'us'), default_spool_id, created_at, updated_at FROM printers WHERE id = $1`, id)
+	if err := row.Scan(&p.ID, &p.Name, &p.Model, &p.Status, &p.LANHost, &p.LANSerial, &p.LANAccessCode, &p.LANEnabled, &p.CloudEnabled, &p.CloudEmail, &p.CloudPassword, &p.CloudToken, &p.CloudRegion, &defaultSpool, &p.CreatedAt, &p.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return printerdomain.Printer{}, fmt.Errorf("%w: printer %s", domain.ErrNotFound, id)
 		}
 		return printerdomain.Printer{}, err
 	}
+	if defaultSpool.Valid {
+		if parsed, err := uuid.Parse(defaultSpool.String); err == nil {
+			p.DefaultSpoolID = parsed
+		}
+	}
 	return p, nil
 }
 
 func (r *PrinterRepository) List(ctx context.Context) ([]printerdomain.Printer, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, name, model, status, created_at, updated_at FROM printers ORDER BY created_at DESC`)
+	rows, err := r.db.QueryContext(ctx, `SELECT id, name, model, status, COALESCE(lan_host,''), COALESCE(lan_serial,''), COALESCE(lan_access_code,''), COALESCE(lan_enabled,false), COALESCE(cloud_enabled,false), COALESCE(cloud_email,''), COALESCE(cloud_password,''), COALESCE(cloud_token,''), COALESCE(cloud_region,'us'), default_spool_id, created_at, updated_at FROM printers ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
@@ -275,8 +303,14 @@ func (r *PrinterRepository) List(ctx context.Context) ([]printerdomain.Printer, 
 	items := make([]printerdomain.Printer, 0)
 	for rows.Next() {
 		var p printerdomain.Printer
-		if err := rows.Scan(&p.ID, &p.Name, &p.Model, &p.Status, &p.CreatedAt, &p.UpdatedAt); err != nil {
+		var defaultSpool sql.NullString
+		if err := rows.Scan(&p.ID, &p.Name, &p.Model, &p.Status, &p.LANHost, &p.LANSerial, &p.LANAccessCode, &p.LANEnabled, &p.CloudEnabled, &p.CloudEmail, &p.CloudPassword, &p.CloudToken, &p.CloudRegion, &defaultSpool, &p.CreatedAt, &p.UpdatedAt); err != nil {
 			return nil, err
+		}
+		if defaultSpool.Valid {
+			if parsed, err := uuid.Parse(defaultSpool.String); err == nil {
+				p.DefaultSpoolID = parsed
+			}
 		}
 		items = append(items, p)
 	}
@@ -284,7 +318,12 @@ func (r *PrinterRepository) List(ctx context.Context) ([]printerdomain.Printer, 
 }
 
 func (r *PrinterRepository) Update(ctx context.Context, p printerdomain.Printer) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE printers SET name=$1, model=$2, status=$3, updated_at=$4 WHERE id=$5`, p.Name, p.Model, string(p.Status), p.UpdatedAt, p.ID)
+	var defaultSpool any
+	if p.DefaultSpoolID != uuid.Nil {
+		defaultSpool = p.DefaultSpoolID
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE printers SET name=$1, model=$2, status=$3, lan_host=$4, lan_serial=$5, lan_access_code=$6, lan_enabled=$7, cloud_enabled=$8, cloud_email=$9, cloud_password=$10, cloud_token=$11, cloud_region=$12, default_spool_id=$13, updated_at=$14 WHERE id=$15`,
+		p.Name, p.Model, string(p.Status), p.LANHost, p.LANSerial, p.LANAccessCode, p.LANEnabled, p.CloudEnabled, p.CloudEmail, p.CloudPassword, p.CloudToken, p.CloudRegion, defaultSpool, p.UpdatedAt, p.ID)
 	if err != nil {
 		return err
 	}
@@ -400,49 +439,102 @@ type PrintJobRepository struct{ db *sql.DB }
 
 func NewPrintJobRepository(db *sql.DB) *PrintJobRepository { return &PrintJobRepository{db: db} }
 
+func nullableUUID(id uuid.UUID) any {
+	if id == uuid.Nil {
+		return nil
+	}
+	return id
+}
+
+func scanOptionalUUID(raw sql.NullString) uuid.UUID {
+	if !raw.Valid || raw.String == "" {
+		return uuid.Nil
+	}
+	parsed, err := uuid.Parse(raw.String)
+	if err != nil {
+		return uuid.Nil
+	}
+	return parsed
+}
+
 func (r *PrintJobRepository) Create(ctx context.Context, j printjobdomain.PrintJob) error {
 	var finishedAt interface{}
 	if j.FinishedAt != nil {
 		finishedAt = *j.FinishedAt
 	}
-	_, err := r.db.ExecContext(ctx, `INSERT INTO print_jobs (id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`, j.ID, j.PrinterID, j.ProductID, j.SpoolID, string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, j.CreatedAt, j.UpdatedAt)
+	source := string(j.Source)
+	if source == "" {
+		source = string(printjobdomain.SourceManual)
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO print_jobs (id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, source, external_task_id, file_name, is_draft, created_at, updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`,
+		j.ID, j.PrinterID, nullableUUID(j.ProductID), nullableUUID(j.SpoolID), string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, source, j.ExternalTaskID, j.FileName, j.IsDraft, j.CreatedAt, j.UpdatedAt)
 	if err != nil {
 		return fmt.Errorf("%w: print job create: %v", domain.ErrConflict, err)
 	}
 	return nil
 }
 
-func (r *PrintJobRepository) GetByID(ctx context.Context, id uuid.UUID) (printjobdomain.PrintJob, error) {
+func scanPrintJob(scan func(dest ...any) error) (printjobdomain.PrintJob, error) {
 	var j printjobdomain.PrintJob
 	var finishedAt sql.NullTime
-	row := r.db.QueryRowContext(ctx, `SELECT id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, created_at, updated_at FROM print_jobs WHERE id = $1`, id)
-	if err := row.Scan(&j.ID, &j.PrinterID, &j.ProductID, &j.SpoolID, &j.Status, &j.Progress, &j.StartedAt, &finishedAt, &j.EstimatedWeight, &j.ConsumedWeight, &j.CreatedAt, &j.UpdatedAt); err != nil {
-		if err == sql.ErrNoRows {
-			return printjobdomain.PrintJob{}, fmt.Errorf("%w: print job %s", domain.ErrNotFound, id)
-		}
+	var productID, spoolID sql.NullString
+	var source, externalTaskID, fileName string
+	var isDraft bool
+	if err := scan(&j.ID, &j.PrinterID, &productID, &spoolID, &j.Status, &j.Progress, &j.StartedAt, &finishedAt, &j.EstimatedWeight, &j.ConsumedWeight, &source, &externalTaskID, &fileName, &isDraft, &j.CreatedAt, &j.UpdatedAt); err != nil {
 		return printjobdomain.PrintJob{}, err
 	}
+	j.ProductID = scanOptionalUUID(productID)
+	j.SpoolID = scanOptionalUUID(spoolID)
+	if source == "" {
+		source = string(printjobdomain.SourceManual)
+	}
+	j.Source = printjobdomain.Source(source)
+	j.ExternalTaskID = externalTaskID
+	j.FileName = fileName
+	j.IsDraft = isDraft
 	if finishedAt.Valid {
 		j.FinishedAt = &finishedAt.Time
 	}
 	return j, nil
 }
 
+const printJobSelect = `SELECT id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, COALESCE(source,'manual'), COALESCE(external_task_id,''), COALESCE(file_name,''), COALESCE(is_draft,false), created_at, updated_at FROM print_jobs`
+
+func (r *PrintJobRepository) GetByID(ctx context.Context, id uuid.UUID) (printjobdomain.PrintJob, error) {
+	row := r.db.QueryRowContext(ctx, printJobSelect+` WHERE id = $1`, id)
+	j, err := scanPrintJob(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return printjobdomain.PrintJob{}, fmt.Errorf("%w: print job %s", domain.ErrNotFound, id)
+		}
+		return printjobdomain.PrintJob{}, err
+	}
+	return j, nil
+}
+
+func (r *PrintJobRepository) GetByExternalTaskID(ctx context.Context, printerID uuid.UUID, externalTaskID string) (printjobdomain.PrintJob, error) {
+	row := r.db.QueryRowContext(ctx, printJobSelect+` WHERE printer_id = $1 AND external_task_id = $2 ORDER BY created_at DESC LIMIT 1`, printerID, externalTaskID)
+	j, err := scanPrintJob(row.Scan)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return printjobdomain.PrintJob{}, fmt.Errorf("%w: print job external %s", domain.ErrNotFound, externalTaskID)
+		}
+		return printjobdomain.PrintJob{}, err
+	}
+	return j, nil
+}
+
 func (r *PrintJobRepository) List(ctx context.Context) ([]printjobdomain.PrintJob, error) {
-	rows, err := r.db.QueryContext(ctx, `SELECT id, printer_id, product_id, spool_id, status, progress, started_at, finished_at, estimated_weight, consumed_weight, created_at, updated_at FROM print_jobs ORDER BY created_at DESC`)
+	rows, err := r.db.QueryContext(ctx, printJobSelect+` ORDER BY created_at DESC`)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	items := make([]printjobdomain.PrintJob, 0)
 	for rows.Next() {
-		var j printjobdomain.PrintJob
-		var finishedAt sql.NullTime
-		if err := rows.Scan(&j.ID, &j.PrinterID, &j.ProductID, &j.SpoolID, &j.Status, &j.Progress, &j.StartedAt, &finishedAt, &j.EstimatedWeight, &j.ConsumedWeight, &j.CreatedAt, &j.UpdatedAt); err != nil {
+		j, err := scanPrintJob(rows.Scan)
+		if err != nil {
 			return nil, err
-		}
-		if finishedAt.Valid {
-			j.FinishedAt = &finishedAt.Time
 		}
 		items = append(items, j)
 	}
@@ -454,7 +546,12 @@ func (r *PrintJobRepository) Update(ctx context.Context, j printjobdomain.PrintJ
 	if j.FinishedAt != nil {
 		finishedAt = *j.FinishedAt
 	}
-	result, err := r.db.ExecContext(ctx, `UPDATE print_jobs SET printer_id=$1, product_id=$2, spool_id=$3, status=$4, progress=$5, started_at=$6, finished_at=$7, estimated_weight=$8, consumed_weight=$9, updated_at=$10 WHERE id=$11`, j.PrinterID, j.ProductID, j.SpoolID, string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, j.UpdatedAt, j.ID)
+	source := string(j.Source)
+	if source == "" {
+		source = string(printjobdomain.SourceManual)
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE print_jobs SET printer_id=$1, product_id=$2, spool_id=$3, status=$4, progress=$5, started_at=$6, finished_at=$7, estimated_weight=$8, consumed_weight=$9, source=$10, external_task_id=$11, file_name=$12, is_draft=$13, updated_at=$14 WHERE id=$15`,
+		j.PrinterID, nullableUUID(j.ProductID), nullableUUID(j.SpoolID), string(j.Status), j.Progress, j.StartedAt, finishedAt, j.EstimatedWeight, j.ConsumedWeight, source, j.ExternalTaskID, j.FileName, j.IsDraft, j.UpdatedAt, j.ID)
 	if err != nil {
 		return err
 	}

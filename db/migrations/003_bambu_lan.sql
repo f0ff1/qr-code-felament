@@ -1,0 +1,23 @@
+BEGIN;
+
+ALTER TABLE printers
+    ADD COLUMN IF NOT EXISTS lan_host TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS lan_serial TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS lan_access_code TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS lan_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS default_spool_id UUID;
+
+ALTER TABLE print_jobs
+    ALTER COLUMN product_id DROP NOT NULL,
+    ALTER COLUMN spool_id DROP NOT NULL;
+
+ALTER TABLE print_jobs
+    ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'manual',
+    ADD COLUMN IF NOT EXISTS external_task_id TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS file_name TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS is_draft BOOLEAN NOT NULL DEFAULT FALSE;
+
+CREATE INDEX IF NOT EXISTS idx_print_jobs_external_task ON print_jobs (printer_id, external_task_id);
+CREATE INDEX IF NOT EXISTS idx_printers_lan_serial ON printers (lan_serial);
+
+COMMIT;

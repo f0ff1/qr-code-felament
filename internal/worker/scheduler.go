@@ -66,7 +66,7 @@ func (s *Scheduler) Run(ctx context.Context) error {
 }
 
 func isActiveJobStatus(status printjobdomain.Status) bool {
-	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused
+	return printjobdomain.IsActive(status)
 }
 
 func (s *Scheduler) syncRuntimeState(ctx context.Context) {

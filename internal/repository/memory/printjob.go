@@ -34,6 +34,15 @@ func (r *PrintJobRepository) GetByID(ctx context.Context, id uuid.UUID) (printjo
 	return j, nil
 }
 
+func (r *PrintJobRepository) GetByExternalTaskID(ctx context.Context, printerID uuid.UUID, externalTaskID string) (printjobdomain.PrintJob, error) {
+	for _, j := range r.items {
+		if j.PrinterID == printerID && j.ExternalTaskID == externalTaskID {
+			return j, nil
+		}
+	}
+	return printjobdomain.PrintJob{}, fmt.Errorf("%w: print job external %s", domain.ErrNotFound, externalTaskID)
+}
+
 func (r *PrintJobRepository) List(ctx context.Context) ([]printjobdomain.PrintJob, error) {
 	list := make([]printjobdomain.PrintJob, 0, len(r.items))
 	for _, j := range r.items {

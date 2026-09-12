@@ -13,7 +13,7 @@ func TestServiceCreateAndGetByID(t *testing.T) {
 	repo := memory.NewPrinterRepository()
 	service := NewService(repo, mock.Adapter{})
 
-	printer, err := service.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printer, err := service.Create(context.Background(), CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -34,7 +34,7 @@ func TestServiceSyncStatusUpdatesPrinter(t *testing.T) {
 	repo := memory.NewPrinterRepository()
 	service := NewService(repo, mock.Adapter{})
 
-	printer, err := service.Create(context.Background(), "Ender 3", "Creality")
+	printer, err := service.Create(context.Background(), CreateInput{Name: "Ender 3", Model: "Creality"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -52,7 +52,7 @@ func TestServiceGetProgress(t *testing.T) {
 	repo := memory.NewPrinterRepository()
 	service := NewService(repo, mock.Adapter{})
 
-	printer, err := service.Create(context.Background(), "Prusa MK4", "Prusa")
+	printer, err := service.Create(context.Background(), CreateInput{Name: "Prusa MK4", Model: "Prusa"})
 	if err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -70,8 +70,17 @@ func TestServiceCreateRejectsEmptyInput(t *testing.T) {
 	repo := memory.NewPrinterRepository()
 	service := NewService(repo, mock.Adapter{})
 
-	if _, err := service.Create(context.Background(), "", ""); err == nil {
+	if _, err := service.Create(context.Background(), CreateInput{}); err == nil {
 		t.Fatal("Create() expected error for empty input")
+	}
+}
+
+func TestServiceCreateLANRequiresCredentials(t *testing.T) {
+	repo := memory.NewPrinterRepository()
+	service := NewService(repo, mock.Adapter{})
+
+	if _, err := service.Create(context.Background(), CreateInput{Name: "A1", Model: "A1", LANEnabled: true}); err == nil {
+		t.Fatal("Create() expected error for incomplete LAN config")
 	}
 }
 
@@ -79,5 +88,26 @@ func TestPrinterEntityDefaultStatusIsIdle(t *testing.T) {
 	p := printerdomain.NewPrinter("Printer X", "Model Y")
 	if p.Status != printerdomain.StatusIdle {
 		t.Fatalf("Status = %s, want %s", p.Status, printerdomain.StatusIdle)
+	}
+}
+
+func TestServiceCreateCloudRequiresSerial(t *testing.T) {
+	repo := memory.NewPrinterRepository()
+	service := NewService(repo, mock.Adapter{})
+
+	if _, err := service.Create(context.Background(), CreateInput{
+		Name: "A1", Model: "A1", CloudEnabled: true, CloudEmail: "a@b.c", CloudPassword: "x",
+	}); err == nil {
+		t.Fatal("Create() expected error for incomplete Cloud config")
+	}
+}
+
+func TestPrinterEntityCloudHelpers(t *testing.T) {
+	p := printerdomain.NewPrinter("Cloud A1", "A1")
+	p.CloudEnabled = true
+	p.LANSerial = "SN1"
+	p.CloudToken = "token"
+	if !p.HasCloudConfig() || !p.CloudLinked() || p.ConnectionMode() != printerdomain.ConnectionCloud {
+		t.Fatalf("cloud helpers failed: %+v", p)
 	}
 }

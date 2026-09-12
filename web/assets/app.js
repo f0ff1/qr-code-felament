@@ -77,7 +77,7 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
 }
 
 function isActiveJobStatus(status) {
-  return ['printing', 'paused', 'queued'].includes(String(status ?? '').toLowerCase());
+  return ['printing', 'paused', 'queued', 'draft'].includes(String(status ?? '').toLowerCase());
 }
 
 function getSpoolStatus(spool) {
@@ -118,6 +118,16 @@ function normalizePrinter(printer) {
     name: printer.name,
     model: printer.model,
     status: String(printer.status ?? 'idle').toLowerCase(),
+    lanEnabled: Boolean(printer.lan_enabled),
+    lanHost: printer.lan_host ?? '',
+    lanSerial: printer.lan_serial ?? '',
+    cloudEnabled: Boolean(printer.cloud_enabled),
+    cloudRegion: printer.cloud_region ?? 'us',
+    cloudEmail: printer.cloud_email ?? '',
+    cloudLinked: Boolean(printer.cloud_linked),
+    needsVerification: Boolean(printer.needs_verification),
+    connection: printer.connection || (printer.cloud_enabled ? 'cloud' : printer.lan_enabled ? 'lan' : 'none'),
+    defaultSpoolId: printer.default_spool_id ?? null,
   };
 }
 
@@ -150,6 +160,10 @@ function normalizeJob(job) {
     productId: job.product_id ?? null,
     spoolId: job.spool_id ?? null,
     startedAt: toDate(job.started_at),
+    source: job.source ?? 'manual',
+    fileName: job.file_name ?? '',
+    isDraft: Boolean(job.is_draft),
+    estimatedWeight: Number(job.estimated_weight ?? 0),
   };
 }
 
@@ -184,6 +198,9 @@ function buildEstimatedPrintTime(hours, minutes) {
 
 function getEffectiveJobStatus(job) {
   if (!job) return 'queued';
+  if (job.isDraft || job.status === 'draft') {
+    return 'draft';
+  }
   if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
     return job.status;
   }
@@ -262,6 +279,7 @@ function updateClock() {
 
 function translateStatus(status) {
   const map = {
+    draft: 'черновик',
     available: 'достаточно',
     low: 'заканчивается',
     in_use: 'в работе',
@@ -540,13 +558,21 @@ function renderPrinters() {
   refs.printerList.innerHTML = state.printers
     .map((printer) => {
       const status = getEffectivePrinterStatus(printer.id);
+      let modeBadge = '<span class="printer-tag idle">manual</span>';
+      if (printer.cloudEnabled) {
+        const cloudLabel = printer.cloudLinked ? 'Cloud' : 'Cloud · код';
+        modeBadge = `<span class="printer-tag cloud">${cloudLabel}</span>`;
+      } else if (printer.lanEnabled) {
+        modeBadge = `<span class="printer-tag lan">LAN ${printer.lanHost || 'on'}</span>`;
+      }
       return `
         <div class="printer-card">
           <div class="printer-copy">
             <strong>${printer.name}</strong>
-            <span>${printer.model}</span>
+            <span>${printer.model}${printer.lanSerial ? ` • ${printer.lanSerial}` : ''}${printer.cloudEmail ? ` • ${printer.cloudEmail}` : ''}</span>
           </div>
           <div class="card-actions">
+            ${modeBadge}
             <span class="printer-tag ${status}">${translateStatus(status)}</span>
             <button class="mini-btn delete" data-delete-type="printer" data-delete-id="${printer.id}" aria-label="Удалить принтер" title="Удалить">×</button>
           </div>
@@ -596,16 +622,18 @@ function renderJobs() {
     .map((job) => {
       const effectiveStatus = getEffectiveJobStatus(job);
       const isCompleted = effectiveStatus === 'completed';
+      const isDraft = job.isDraft || effectiveStatus === 'draft';
       const isPaused = job.status === 'paused' && !isCompleted;
       const actionLabel = isPaused ? 'Продолжить' : 'Приостановить';
       const progress = isCompleted ? 100 : Math.round(getJobProgress(job));
       const product = state.products.find((item) => item.id === job.productId);
       const estimated = product?.estimatedPrintTime || '0m';
+      const title = job.fileName || product?.name || job.product;
       return `
         <div class="job-item">
           <div class="job-title">
-            <strong>Задача ${job.id.slice(0, 8)}</strong>
-            <span>Принтер ${job.printer} • Продукт ${product?.name || job.product} • ${formatDuration(parseDurationToMs(estimated))}</span>
+            <strong>${isDraft ? 'Черновик' : 'Задача'} ${job.id.slice(0, 8)}</strong>
+            <span>${title} • Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${formatDuration(parseDurationToMs(estimated))}</span>
           </div>
           <div class="job-body">
             ${isCompleted ? '' : `
@@ -617,8 +645,9 @@ function renderJobs() {
             `}
           </div>
           <div class="card-actions">
-            <span class="job-tag ${isCompleted ? 'completed' : effectiveStatus}">${translateStatus(isCompleted ? 'completed' : effectiveStatus)}</span>
-            ${isCompleted ? '' : `<button class="mini-btn" data-job-toggle-id="${job.id}" data-job-toggle-action="${isPaused ? 'resume' : 'pause'}">${actionLabel}</button>`}
+            <span class="job-tag ${isDraft ? 'draft' : (isCompleted ? 'completed' : effectiveStatus)}">${isDraft ? 'черновик' : translateStatus(isCompleted ? 'completed' : effectiveStatus)}</span>
+            ${isDraft ? `<button class="mini-btn" data-confirm-draft-id="${job.id}">Подтвердить</button>` : ''}
+            ${isCompleted || isDraft ? '' : `<button class="mini-btn" data-job-toggle-id="${job.id}" data-job-toggle-action="${isPaused ? 'resume' : 'pause'}">${actionLabel}</button>`}
             <button class="mini-btn delete" data-delete-type="job" data-delete-id="${job.id}" aria-label="Удалить задачу" title="Удалить">×</button>
           </div>
         </div>
@@ -652,6 +681,13 @@ function renderJobOptions() {
     }
 
     updateProductCostPreview();
+  }
+
+  const printerDefaultSpool = document.getElementById('printerDefaultSpoolId');
+  if (printerDefaultSpool) {
+    printerDefaultSpool.innerHTML = '<option value="">Автоматически</option>' + state.spools
+      .map((spool) => `<option value="${spool.id}">${spool.material} / ${spool.color} / ${spool.qr}</option>`)
+      .join('');
   }
 }
 
@@ -875,22 +911,12 @@ async function createSpool(event) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const qrImageUrl = `/public/spools/qr/${result.qr_token}`;
-    const qrPageUrl = `/spool/${result.qr_token}`;
-    refs.spoolFormStatus.innerHTML = `
-      <div class="created-item">
-        <strong>Катушка создана</strong>
-        <a href="${qrPageUrl}" target="_blank" rel="noopener noreferrer">
-          <img src="${qrImageUrl}" alt="QR-код" />
-        </a>
-      </div>
-    `;
-    appendActivity(`Катушка создана: ${result.qr_token}`, 'success');
-    showToast(`Катушка ${result.qr_token} добавлена на склад`, 'success', 'Склад');
+    if (refs.spoolFormStatus) refs.spoolFormStatus.innerHTML = '';
+    notify(`Катушка ${result.qr_token} добавлена на склад`, 'success', 'Склад');
     form.reset();
     await loadData();
   } catch (error) {
-    refs.spoolFormStatus.textContent = error.message;
+    if (refs.spoolFormStatus) refs.spoolFormStatus.innerHTML = '';
     notify(error.message || 'Не удалось создать катушку', 'error', 'Склад');
   } finally {
     setFormBusy(form, false);
@@ -903,25 +929,67 @@ async function createPrinter(event) {
   if (form.dataset.busy === 'true') return;
   setFormBusy(form, true);
 
+  const mode = form.connectionMode?.value || 'none';
+  const payload = {
+    name: form.name.value,
+    model: form.model.value,
+    lanEnabled: mode === 'lan',
+    cloudEnabled: mode === 'cloud',
+    lanHost: form.lanHost?.value || '',
+    lanSerial: form.lanSerial?.value || '',
+    lanAccessCode: form.lanAccessCode?.value || '',
+    cloudEmail: form.cloudEmail?.value || '',
+    cloudPassword: form.cloudPassword?.value || '',
+    cloudRegion: form.cloudRegion?.value || 'us',
+    cloudVerifyCode: form.cloudVerifyCode?.value || '',
+    defaultSpoolId: form.defaultSpoolId?.value || '',
+  };
+
   try {
     const result = await fetchJSON('/api/printers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: form.name.value,
-        model: form.model.value,
-      }),
+      body: JSON.stringify(payload),
     });
-    refs.printerFormStatus.textContent = `Принтер создан: ${result.id}`;
-    notify(`Принтер «${form.name.value}» добавлен`, 'success', 'Принтеры');
+    if (refs.printerFormStatus) refs.printerFormStatus.textContent = '';
+
+    if (result.needs_verification) {
+      const code = window.prompt('Bambu отправил код на email. Введите код подтверждения:');
+      if (!code) {
+        notify('Принтер сохранён, но Cloud ещё не подтверждён. Добавьте код позже.', 'warning', 'Принтеры');
+      } else {
+        await fetchJSON(`/api/printers/${result.id}/cloud/verify`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code }),
+        });
+        notify(`Принтер «${form.name.value}» подключён к Bambu Cloud`, 'success', 'Принтеры');
+      }
+    } else {
+      const modeLabel = mode === 'cloud' ? 'через Bambu Cloud' : mode === 'lan' ? 'по LAN' : '';
+      notify(`Принтер «${form.name.value}» добавлен ${modeLabel}`.trim(), 'success', 'Принтеры');
+    }
+
     form.reset();
+    if (form.connectionMode) form.connectionMode.value = 'cloud';
+    syncPrinterConnectionFields();
     await loadData();
   } catch (error) {
-    refs.printerFormStatus.textContent = error.message;
+    if (refs.printerFormStatus) refs.printerFormStatus.textContent = '';
     notify(error.message || 'Не удалось создать принтер', 'error', 'Принтеры');
   } finally {
     setFormBusy(form, false);
   }
+}
+
+function syncPrinterConnectionFields() {
+  const form = refs.printerForm;
+  if (!form) return;
+  const mode = form.connectionMode?.value || 'none';
+  const lan = document.getElementById('printerLanFields');
+  const cloud = document.getElementById('printerCloudFields');
+  if (lan) lan.classList.toggle('hidden', mode !== 'lan');
+  if (cloud) cloud.classList.toggle('hidden', mode !== 'cloud');
 }
 
 async function createProduct(event) {
@@ -937,7 +1005,8 @@ async function createProduct(event) {
   const spoolId = form.productSpoolId?.value;
   const selectedSpool = state.spools.find((spool) => spool.id === spoolId);
   if (!selectedSpool) {
-    refs.productFormStatus.textContent = 'Выберите доступную катушку';
+    if (refs.productFormStatus) refs.productFormStatus.textContent = '';
+    notify('Выберите доступную катушку', 'warning', 'Продукты');
     setFormBusy(form, false);
     return;
   }
@@ -958,13 +1027,13 @@ async function createProduct(event) {
         price: Number(form.price.value),
       }),
     });
-    refs.productFormStatus.textContent = `Продукт создан: ${result.name}`;
+    if (refs.productFormStatus) refs.productFormStatus.textContent = '';
     notify(`Продукт «${result.name}» добавлен`, 'success', 'Продукты');
     form.reset();
-    refs.productCostPreview.textContent = '0.00 ₽';
+    if (refs.productCostPreview) refs.productCostPreview.textContent = '0.00 ₽';
     await loadData();
   } catch (error) {
-    refs.productFormStatus.textContent = error.message;
+    if (refs.productFormStatus) refs.productFormStatus.textContent = '';
     notify(error.message || 'Не удалось создать продукт', 'error', 'Продукты');
   } finally {
     setFormBusy(form, false);
@@ -981,7 +1050,8 @@ async function createPrintJob(event) {
   const spoolId = form.spoolId.value;
 
   if (!printerId || !productId || !spoolId) {
-    refs.jobFormStatus.textContent = 'Выберите принтер, продукт и катушку';
+    if (refs.jobFormStatus) refs.jobFormStatus.textContent = '';
+    notify('Выберите принтер, продукт и катушку', 'warning', 'Печать');
     setFormBusy(form, false);
     return;
   }
@@ -993,12 +1063,12 @@ async function createPrintJob(event) {
       body: JSON.stringify({ printerId, productId, spoolId }),
     });
     state.jobRuntimeStarts[result.id] = Date.now();
-    refs.jobFormStatus.textContent = `Задача создана: ${result.id}`;
-    notify(`Задача печати запущена`, 'success', 'Печать');
+    if (refs.jobFormStatus) refs.jobFormStatus.textContent = '';
+    notify('Задача печати запущена', 'success', 'Печать');
     form.reset();
     await loadData();
   } catch (error) {
-    refs.jobFormStatus.textContent = error.message;
+    if (refs.jobFormStatus) refs.jobFormStatus.textContent = '';
     notify(error.message || 'Не удалось создать задачу печати', 'error', 'Печать');
   } finally {
     setFormBusy(form, false);
@@ -1049,6 +1119,42 @@ async function toggleJobStatus(id, action) {
     await loadData();
   } catch (error) {
     notify(error.message || 'Ошибка изменения статуса', 'error', 'Печать');
+  }
+}
+
+async function confirmDraftJob(jobId) {
+  if (!state.products.length || !state.spools.length) {
+    notify('Сначала добавьте продукт и катушку', 'warning', 'Печать');
+    return;
+  }
+  const productOptions = state.products.map((p, i) => `${i + 1}. ${p.name}`).join('\n');
+  const productPick = window.prompt(`Выберите продукт (номер):\n${productOptions}`, '1');
+  if (productPick === null) return;
+  const product = state.products[Number(productPick) - 1];
+  if (!product) {
+    notify('Неверный номер продукта', 'error', 'Печать');
+    return;
+  }
+
+  const spoolOptions = state.spools.map((s, i) => `${i + 1}. ${s.material}/${s.color}/${s.qr}`).join('\n');
+  const spoolPick = window.prompt(`Выберите катушку (номер):\n${spoolOptions}`, '1');
+  if (spoolPick === null) return;
+  const spool = state.spools[Number(spoolPick) - 1];
+  if (!spool) {
+    notify('Неверный номер катушки', 'error', 'Печать');
+    return;
+  }
+
+  try {
+    await fetchJSON(`/api/print-jobs/${jobId}/confirm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ productId: product.id, spoolId: spool.id }),
+    });
+    notify('Черновик подтверждён, пластик зарезервирован', 'success', 'Печать');
+    await loadData();
+  } catch (error) {
+    notify(error.message || 'Не удалось подтвердить черновик', 'error', 'Печать');
   }
 }
 
@@ -1127,6 +1233,12 @@ function bindEvents() {
     const jobToggle = event.target.closest('[data-job-toggle-id]');
     if (jobToggle) {
       await toggleJobStatus(jobToggle.dataset.jobToggleId, jobToggle.dataset.jobToggleAction);
+      return;
+    }
+
+    const confirmDraft = event.target.closest('[data-confirm-draft-id]');
+    if (confirmDraft) {
+      await confirmDraftJob(confirmDraft.dataset.confirmDraftId);
     }
   });
 
@@ -1174,6 +1286,8 @@ function bindEvents() {
 
   refs.spoolForm.addEventListener('submit', createSpool);
   refs.printerForm.addEventListener('submit', createPrinter);
+  refs.printerForm?.connectionMode?.addEventListener('change', syncPrinterConnectionFields);
+  syncPrinterConnectionFields();
   refs.productForm.addEventListener('submit', createProduct);
   refs.jobForm.addEventListener('submit', createPrintJob);
 }

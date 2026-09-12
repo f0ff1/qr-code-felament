@@ -15,6 +15,14 @@ const (
 	StatusCompleted Status = "completed"
 	StatusFailed    Status = "failed"
 	StatusCancelled Status = "cancelled"
+	StatusDraft     Status = "draft"
+)
+
+type Source string
+
+const (
+	SourceManual Source = "manual"
+	SourceBambu  Source = "bambu"
 )
 
 type PrintJob struct {
@@ -23,6 +31,10 @@ type PrintJob struct {
 	ProductID       uuid.UUID
 	SpoolID         uuid.UUID
 	Status          Status
+	Source          Source
+	ExternalTaskID  string
+	FileName        string
+	IsDraft         bool
 	Progress        float64
 	StartedAt       time.Time
 	FinishedAt      *time.Time
@@ -40,6 +52,7 @@ func NewPrintJob(printerID, productID, spoolID uuid.UUID, estimatedWeight int) P
 		ProductID:       productID,
 		SpoolID:         spoolID,
 		Status:          StatusQueued,
+		Source:          SourceManual,
 		Progress:        0,
 		StartedAt:       now,
 		EstimatedWeight: estimatedWeight,
@@ -70,4 +83,23 @@ func (j *PrintJob) Complete() {
 	finishedAt := time.Now()
 	j.FinishedAt = &finishedAt
 	j.UpdatedAt = time.Now()
+	j.IsDraft = false
+}
+
+func (j *PrintJob) Fail() {
+	j.Status = StatusFailed
+	finishedAt := time.Now()
+	j.FinishedAt = &finishedAt
+	j.UpdatedAt = time.Now()
+}
+
+func (j *PrintJob) Cancel() {
+	j.Status = StatusCancelled
+	finishedAt := time.Now()
+	j.FinishedAt = &finishedAt
+	j.UpdatedAt = time.Now()
+}
+
+func IsActive(status Status) bool {
+	return status == StatusQueued || status == StatusPrinting || status == StatusPaused || status == StatusDraft
 }

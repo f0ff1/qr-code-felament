@@ -51,7 +51,7 @@ func TestPrintJobCanStartWhenFilamentIsEnough(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
@@ -84,7 +84,7 @@ func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
@@ -113,7 +113,7 @@ func TestPrintJobStartConsumesFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
@@ -154,7 +154,7 @@ func TestPrintJobPauseAndResume(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}
@@ -206,7 +206,7 @@ func TestDeleteUnfinishedJobRestoresFilament(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
-	printerEntity, err := printerService.Create(context.Background(), "Bambu A1", "Bambu Lab")
+	printerEntity, err := printerService.Create(context.Background(), printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
 		t.Fatalf("Create printer error = %v", err)
 	}

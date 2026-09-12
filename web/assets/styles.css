@@ -238,6 +238,10 @@ p {
   display: none;
 }
 
+.hidden {
+  display: none !important;
+}
+
 .data-form {
   margin-top: 20px;
   padding: 18px;
@@ -1462,4 +1466,33 @@ h1 {
   .page-shell {
     padding-left: 8px;
   }
+}
+
+.printer-tag.lan {
+  background: rgba(88, 166, 255, 0.16);
+  color: var(--blue);
+}
+
+.printer-tag.cloud {
+  background: rgba(63, 185, 80, 0.16);
+  color: var(--green, #3fb950);
+}
+
+.form-hint {
+  margin: 0;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: var(--text-muted, #8b949e);
+}
+
+.job-tag.draft {
+  background: rgba(210, 153, 34, 0.16);
+  color: var(--yellow);
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--text-strong);
 }

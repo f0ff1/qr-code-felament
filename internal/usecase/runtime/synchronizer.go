@@ -164,7 +164,7 @@ func (s *Synchronizer) syncSpools(ctx context.Context, jobs []printjobdomain.Pri
 }
 
 func isActive(status printjobdomain.Status) bool {
-	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused
+	return printjobdomain.IsActive(status)
 }
 
 func (s *Synchronizer) writeCache(ctx context.Context, key string, value any) {

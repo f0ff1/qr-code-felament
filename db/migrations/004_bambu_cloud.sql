@@ -1,0 +1,12 @@
+BEGIN;
+
+ALTER TABLE printers
+    ADD COLUMN IF NOT EXISTS cloud_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS cloud_email TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cloud_password TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cloud_token TEXT NOT NULL DEFAULT '',
+    ADD COLUMN IF NOT EXISTS cloud_region TEXT NOT NULL DEFAULT 'us';
+
+CREATE INDEX IF NOT EXISTS idx_printers_cloud_enabled ON printers (cloud_enabled);
+
+COMMIT;
