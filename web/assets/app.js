@@ -171,6 +171,7 @@ function normalizeJob(job) {
     fileName: job.file_name ?? '',
     isDraft: Boolean(job.is_draft),
     estimatedWeight: Number(job.estimated_weight ?? 0),
+    consumedWeight: Number(job.consumed_weight ?? 0),
     remainingMinutes: Number(job.remaining_minutes ?? 0),
     estimatedDurationSec: Number(job.estimated_duration_sec ?? 0),
     layerCurrent: Number(job.layer_current ?? 0),
@@ -265,22 +266,37 @@ function getJobRemainingEstimate(job) {
   if (Number(job?.estimatedWeight) > 0) {
     return Number(job.estimatedWeight);
   }
+  if (Number(job?.consumedWeight) > 0) {
+    return Number(job.consumedWeight);
+  }
   const product = state.products.find((item) => item.id === job.productId);
   return Number(product?.estimatedWeight ?? 0);
 }
 
+function jobReservesSpool(job, spoolId) {
+  if (!job || String(job.spoolId ?? '') !== String(spoolId ?? '')) return false;
+  // Use raw status: getEffectiveJobStatus() may mark a live print as completed at 100%.
+  const status = String(job.status ?? '').toLowerCase();
+  return ['printing', 'paused', 'preparing', 'queued', 'draft'].includes(status);
+}
+
+function getJobPrintProgressPercent(job) {
+  // Filament burn-down must follow printer %, not wall-clock estimates.
+  let progress = Number(job?.progress ?? 0);
+  if (!Number.isFinite(progress) || progress < 0) progress = 0;
+  if (progress > 100) progress = 100;
+  return progress;
+}
+
 function getSpoolCurrentDisplay(spool) {
-  if (spool.currentRemaining != null && Number.isFinite(Number(spool.currentRemaining))) {
-    return Math.max(0, Number(spool.currentRemaining));
-  }
-  const activeJobs = state.jobs.filter((job) => {
-    if (String(job.spoolId) !== String(spool.id)) return false;
-    return ['printing', 'paused', 'preparing', 'queued'].includes(getEffectiveJobStatus(job));
-  });
+  // Future remaining is already reduced by the full reserved job weight in DB.
+  // Current remaining adds back filament that has not been extruded yet.
   const futureRemaining = Number(spool.remaining ?? 0);
-  const notYetUsed = activeJobs.reduce((total, job) => {
+  const notYetUsed = state.jobs.reduce((total, job) => {
+    if (!jobReservesSpool(job, spool.id)) return total;
     const weight = getJobRemainingEstimate(job);
-    const progress = getJobProgress(job) / 100;
+    if (weight <= 0) return total;
+    const progress = getJobPrintProgressPercent(job) / 100;
     return total + weight * (1 - progress);
   }, 0);
   return Math.max(0, futureRemaining + notYetUsed);

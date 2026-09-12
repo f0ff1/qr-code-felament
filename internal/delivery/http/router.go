@@ -395,16 +395,24 @@ func NewRouter() http.Handler {
 				return
 			}
 			payload := make([]map[string]any, 0, len(spools))
-			jobs, _ := printJobService.List(context.Background())
+			jobs, jobsErr := printJobService.List(context.Background())
+			if jobsErr != nil {
+				jobs = nil
+			}
 			for _, spool := range spools {
+				future := spool.CurrentWeight
+				current := future
+				if jobsErr == nil {
+					current = spoolCurrentDisplayRemaining(spool, jobs)
+				}
 				payload = append(payload, map[string]any{
 					"id":                spool.ID.String(),
 					"material":          string(spool.Material),
 					"color":             spool.Color,
 					"manufacturer":      spool.Manufacturer,
 					"initial_weight":    spool.InitialWeight,
-					"remaining_weight":  spool.CurrentWeight,
-					"current_remaining": spoolCurrentDisplayRemaining(spool, jobs),
+					"remaining_weight":  future,
+					"current_remaining": current,
 					"price":             spool.Price,
 					"status":            string(spool.Status),
 					"qr_token":          spool.QRToken,
