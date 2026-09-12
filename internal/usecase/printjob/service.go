@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"filamenttracker/internal/domain"
 	"filamenttracker/internal/domain/filament"
@@ -98,6 +99,7 @@ func (s *Service) Start(ctx context.Context, printerID, productID, spoolID uuid.
 }
 
 func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Printer, snap BambuSnapshot) (printjobdomain.PrintJob, bool, error) {
+	snap = sanitizeSnapshot(snap)
 	if snap.ExternalTaskID == "" {
 		snap.ExternalTaskID = "local-" + printer.ID.String()
 	}
@@ -405,12 +407,38 @@ func productDisplayName(fileName string) string {
 	}
 	parts := strings.Fields(name)
 	for i, part := range parts {
-		if part == "" {
+		runes := []rune(part)
+		if len(runes) == 0 {
 			continue
 		}
-		parts[i] = strings.ToUpper(part[:1]) + part[1:]
+		parts[i] = strings.ToUpper(string(runes[0])) + string(runes[1:])
 	}
 	return strings.Join(parts, " ")
+}
+
+func sanitizeSnapshot(snap BambuSnapshot) BambuSnapshot {
+	snap.ExternalTaskID = sanitizeUTF8(snap.ExternalTaskID)
+	snap.FileName = sanitizeUTF8(snap.FileName)
+	snap.MaterialHint = sanitizeUTF8(snap.MaterialHint)
+	snap.ColorHint = sanitizeUTF8(snap.ColorHint)
+	snap.BrandHint = sanitizeUTF8(snap.BrandHint)
+	return snap
+}
+
+// sanitizeUTF8 strips invalid bytes so Postgres UTF8 columns never reject Bambu strings.
+func sanitizeUTF8(raw string) string {
+	if raw == "" || utf8.ValidString(raw) {
+		return raw
+	}
+	return strings.ToValidUTF8(raw, "")
+}
+
+func normalizeName(raw string) string {
+	base := strings.ToLower(strings.TrimSpace(sanitizeUTF8(raw)))
+	base = strings.TrimSuffix(base, filepath.Ext(base))
+	base = strings.ReplaceAll(base, "_", " ")
+	base = strings.ReplaceAll(base, "-", " ")
+	return strings.Join(strings.Fields(base), " ")
 }
 
 func (s *Service) autoCreateProduct(ctx context.Context, snap BambuSnapshot, spoolID uuid.UUID, estimated int) (productdomain.Product, error) {
@@ -761,7 +789,7 @@ func uniqueStrings(in []string) []string {
 	seen := make(map[string]struct{}, len(in))
 	out := make([]string, 0, len(in))
 	for _, v := range in {
-		v = strings.TrimSpace(v)
+		v = strings.TrimSpace(sanitizeUTF8(v))
 		if v == "" {
 			continue
 		}
@@ -772,14 +800,6 @@ func uniqueStrings(in []string) []string {
 		out = append(out, v)
 	}
 	return out
-}
-
-func normalizeName(raw string) string {
-	base := strings.ToLower(strings.TrimSpace(raw))
-	base = strings.TrimSuffix(base, filepath.Ext(base))
-	base = strings.ReplaceAll(base, "_", " ")
-	base = strings.ReplaceAll(base, "-", " ")
-	return strings.Join(strings.Fields(base), " ")
 }
 
 func estimateWeight(remainingMin int, progress float64) int {

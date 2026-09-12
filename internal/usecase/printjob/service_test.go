@@ -3,6 +3,7 @@ package printjob
 import (
 	"context"
 	"testing"
+	"unicode/utf8"
 
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
@@ -10,6 +11,59 @@ import (
 	"filamenttracker/internal/repository/memory"
 	productusecase "filamenttracker/internal/usecase/product"
 )
+
+func TestSanitizeUTF8StripsInvalidBytes(t *testing.T) {
+	raw := "model" + string([]byte{0x80}) + "_v1.gcode"
+	got := sanitizeUTF8(raw)
+	if !utf8.ValidString(got) {
+		t.Fatalf("sanitizeUTF8 returned invalid UTF-8: %q", got)
+	}
+	if got != "model_v1.gcode" {
+		t.Fatalf("sanitizeUTF8 = %q, want model_v1.gcode", got)
+	}
+	name := productDisplayName(raw)
+	if !utf8.ValidString(name) || name == "" {
+		t.Fatalf("productDisplayName = %q", name)
+	}
+}
+
+func TestSyncFromBambuAcceptsInvalidUTF8FileName(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	if err := printerRepo.Create(context.Background(), printer); err != nil {
+		t.Fatal(err)
+	}
+
+	fileName := "print" + string([]byte{0x80, 0xff}) + "_box.3mf"
+	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID: "task-bad-utf8",
+		FileName:       fileName,
+		Progress:       5,
+		Status:         printjobdomain.StatusPrinting,
+		RemainingMin:   60,
+	})
+	if err != nil {
+		t.Fatalf("SyncFromBambu: %v", err)
+	}
+	if !created {
+		t.Fatal("expected created job")
+	}
+	if !utf8.ValidString(job.FileName) {
+		t.Fatalf("job file name invalid UTF-8: %q", job.FileName)
+	}
+	products, _ := productRepo.List(context.Background())
+	if len(products) != 1 {
+		t.Fatalf("products = %d, want 1", len(products))
+	}
+	if !utf8.ValidString(products[0].Name) || !utf8.ValidString(products[0].Description) {
+		t.Fatalf("product strings invalid: name=%q desc=%q", products[0].Name, products[0].Description)
+	}
+}
 
 func TestSyncFromBambuCreatesDraftWhenUnmatched(t *testing.T) {
 	spoolRepo := memory.NewRepository()
