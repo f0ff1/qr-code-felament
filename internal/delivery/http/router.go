@@ -111,7 +111,6 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, proj
     <div class="badge">%s</div>
     <div class="grid">
       <div class="item"><strong>Производитель</strong><span>%s</span></div>
-      <div class="item"><strong>Остаток на данный момент</strong><span>%d г</span></div>
       <div class="item"><strong>Остаток в будущем</strong><span>%d г</span></div>
       <div class="item"><strong>QR token</strong><span class="muted">%s</span></div>
     </div>
@@ -126,7 +125,6 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, proj
 		spoolEntity.Color,
 		statusLabel,
 		spoolEntity.Manufacturer,
-		currentRemaining,
 		projectedRemaining,
 		spoolEntity.QRToken,
 		baseURL,
