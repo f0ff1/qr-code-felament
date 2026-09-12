@@ -14,6 +14,7 @@ import (
 
 	"filamenttracker/internal/bootstrap"
 	"filamenttracker/internal/config"
+	printjobdomain "filamenttracker/internal/domain/printjob"
 	spooldomain "filamenttracker/internal/domain/spool"
 	"filamenttracker/internal/infrastructure/printer/mock"
 	"filamenttracker/internal/repository/memory"
@@ -47,14 +48,34 @@ func publicBaseURL(r *http.Request) string {
 	return fmt.Sprintf("%s://%s", scheme, host)
 }
 
-func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string {
+func spoolCurrentDisplayRemaining(spoolEntity spooldomain.Spool, jobs []printjobdomain.PrintJob) int {
+	currentRemaining := spoolEntity.CurrentWeight
+	consumedFromJobs := 0
+	for _, job := range jobs {
+		if job.SpoolID != spoolEntity.ID || !isActivePrintJobStatus(job.Status) {
+			continue
+		}
+		progress := max(0.0, job.Progress)
+		if progress > 100 {
+			progress = 100
+		}
+		consumedFromJobs += int(float64(job.EstimatedWeight) * (progress / 100.0))
+	}
+	return max(0, currentRemaining+consumedFromJobs)
+}
+
+func isActivePrintJobStatus(status printjobdomain.Status) bool {
+	return status == printjobdomain.StatusQueued || status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused
+}
+
+func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, projectedRemaining int, baseURL string) string {
 	statusLabel := "достаточно"
 	switch {
 	case spoolEntity.Status == spooldomain.StatusInUse:
 		statusLabel = "в работе"
-	case spoolEntity.CurrentWeight <= 0:
+	case currentRemaining <= 0:
 		statusLabel = "закончился"
-	case spoolEntity.CurrentWeight < 200:
+	case currentRemaining < 200:
 		statusLabel = "заканчивается"
 	}
 
@@ -91,7 +112,7 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string
     <div class="grid">
       <div class="item"><strong>Производитель</strong><span>%s</span></div>
       <div class="item"><strong>Остаток на данный момент</strong><span>%d г</span></div>
-      <div class="item"><strong>Остаток в базе</strong><span>%d г</span></div>
+      <div class="item"><strong>Остаток в будущем</strong><span>%d г</span></div>
       <div class="item"><strong>QR token</strong><span class="muted">%s</span></div>
     </div>
     <div class="qr">
@@ -105,8 +126,8 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string
 		spoolEntity.Color,
 		statusLabel,
 		spoolEntity.Manufacturer,
-		spoolEntity.CurrentWeight,
-		spoolEntity.InitialWeight,
+		currentRemaining,
+		projectedRemaining,
 		spoolEntity.QRToken,
 		baseURL,
 		spoolEntity.QRToken,
@@ -666,9 +687,15 @@ func NewRouter() http.Handler {
 			return
 		}
 
+		jobs, err := printJobService.List(context.Background())
+		if err != nil {
+			jobs = nil
+		}
+		currentRemaining := spoolCurrentDisplayRemaining(spoolEntity, jobs)
+		projectedRemaining := spoolEntity.CurrentWeight
 		baseURL := publicBaseURL(r)
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = w.Write([]byte(renderSpoolPublicPage(spoolEntity, baseURL)))
+		_, _ = w.Write([]byte(renderSpoolPublicPage(spoolEntity, currentRemaining, projectedRemaining, baseURL)))
 	})
 
 	mux.Handle("/events", NewSSEHandler(notifier))

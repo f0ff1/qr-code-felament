@@ -25,6 +25,7 @@
 
 * {
   box-sizing: border-box;
+  min-width: 0;
 }
 
 html {
@@ -40,12 +41,36 @@ body {
     radial-gradient(circle at bottom right, rgba(63, 185, 80, 0.12), transparent 30%),
     var(--bg);
   color: var(--text);
+  overflow-x: hidden;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
+img,
+svg {
+  max-width: 100%;
 }
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
+}
+
+button,
+input,
+select,
+textarea,
+span,
+strong,
+small,
+label,
+li,
+div,
+p {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .page-shell {
@@ -56,6 +81,7 @@ select {
   margin: 0 auto;
   padding: 24px;
   gap: 22px;
+  min-width: 0;
 }
 
 .sidebar,
@@ -64,6 +90,7 @@ select {
   background: linear-gradient(180deg, rgba(22, 27, 34, 0.9), rgba(13, 17, 23, 0.88));
   border: 1px solid var(--border);
   box-shadow: var(--shadow);
+  min-width: 0;
 }
 
 .sidebar {
@@ -394,6 +421,7 @@ select {
   align-items: end;
   gap: 20px;
   padding: 8px 6px 0;
+  min-width: 0;
 }
 
 .eyebrow {
@@ -517,6 +545,7 @@ h1 {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 18px;
+  min-width: 0;
 }
 
 .summary-card {
@@ -628,6 +657,7 @@ h1 {
   display: grid;
   grid-template-columns: minmax(0, 1.7fr) minmax(280px, 0.8fr);
   gap: 20px;
+  min-width: 0;
 }
 
 .overview-panel {
@@ -638,6 +668,7 @@ h1 {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 20px;
+  min-width: 0;
 }
 
 .mini-list {
@@ -655,6 +686,7 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(13, 17, 23, 0.5);
+  min-width: 0;
 }
 
 .overview-item strong,
@@ -731,6 +763,7 @@ h1 {
 .panel {
   border-radius: var(--radius);
   padding: 20px;
+  min-width: 0;
 }
 
 .panel-head {
@@ -779,6 +812,8 @@ h1 {
   text-align: left;
   border-bottom: 1px solid var(--border);
   vertical-align: middle;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .inventory-table th {
@@ -830,6 +865,7 @@ h1 {
   display: flex;
   align-items: center;
   gap: 10px;
+  min-width: 0;
 }
 
 .weight-metric .text {
@@ -989,6 +1025,7 @@ h1 {
   border-radius: 12px;
   background: rgba(13, 17, 23, 0.5);
   transition: transform 0.2s ease, border-color 0.2s ease;
+  min-width: 0;
 }
 
 .printer-card:hover {
@@ -1043,6 +1080,7 @@ h1 {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(13, 17, 23, 0.45);
+  min-width: 0;
 }
 
 .top-gap {
@@ -1169,7 +1207,8 @@ h1 {
   }
 
   .board-grid,
-  .bottom-grid {
+  .bottom-grid,
+  .overview-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1179,14 +1218,25 @@ h1 {
     padding: 14px;
   }
 
-  .topbar {
+  .topbar,
+  .toolbar-row,
+  .panel-head,
+  .topbar-tools,
+  .row-actions,
+  .card-actions,
+  .job-item,
+  .printer-card,
+  .overview-item,
+  .created-item {
     flex-direction: column;
     align-items: stretch;
   }
 
+  .topbar,
+  .toolbar-row,
+  .panel-head,
   .topbar-tools {
-    flex-direction: column;
-    align-items: stretch;
+    gap: 12px;
   }
 
   .search-wrap {
@@ -1197,10 +1247,60 @@ h1 {
   .summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .form-span-2 {
+    grid-column: span 1;
+  }
+
+  .overview-item,
+  .printer-card,
+  .job-item,
+  .activity-item {
+    padding: 12px;
+  }
+
+  .status-pill,
+  .job-tag,
+  .printer-tag {
+    white-space: nowrap;
+    width: fit-content;
+  }
+
+  .inventory-table {
+    min-width: 720px;
+  }
 }
 
 @media (max-width: 520px) {
   .summary-grid {
     grid-template-columns: 1fr;
+  }
+
+  h1 {
+    font-size: clamp(1.8rem, 9vw, 2.5rem);
+  }
+
+  .nav-item {
+    padding: 10px 12px;
+  }
+
+  .summary-card strong {
+    font-size: clamp(1.6rem, 9vw, 2.2rem);
+  }
+
+  .panel,
+  .data-form,
+  .sidebar {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
+
+  .table-wrap {
+    margin: 0 -8px;
+    width: calc(100% + 16px);
   }
 }

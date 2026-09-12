@@ -70,8 +70,10 @@ func isActiveJobStatus(status printjobdomain.Status) bool {
 }
 
 func (s *Scheduler) syncRuntimeState(ctx context.Context) {
+	var jobs []printjobdomain.PrintJob
 	if s.jobRepo != nil {
-		jobs, err := s.jobRepo.List(ctx)
+		var err error
+		jobs, err = s.jobRepo.List(ctx)
 		if err == nil {
 			for i := range jobs {
 				job := jobs[i]
@@ -91,40 +93,35 @@ func (s *Scheduler) syncRuntimeState(ctx context.Context) {
 		if err == nil {
 			for i := range spools {
 				spool := spools[i]
-				if s.jobRepo != nil {
-					jobs, listErr := s.jobRepo.List(ctx)
-					if listErr == nil {
-						for _, job := range jobs {
-							if job.SpoolID == spool.ID && isActiveJobStatus(job.Status) {
-								spool.Status = spooldomain.StatusInUse
-								spool.UpdatedAt = time.Now()
-								_ = s.spoolRepo.Update(ctx, spool)
-								break
-							}
-						}
+				hasActiveJob := false
+				for _, job := range jobs {
+					if job.SpoolID == spool.ID && isActiveJobStatus(job.Status) {
+						hasActiveJob = true
+						break
 					}
 				}
-				if spool.Status == spooldomain.StatusInUse {
-					continue
-				}
-				if spool.CurrentWeight <= 0 {
-					if spool.Status != spooldomain.StatusEmpty {
-						spool.Status = spooldomain.StatusEmpty
+
+				if hasActiveJob {
+					if spool.Status != spooldomain.StatusInUse {
+						spool.Status = spooldomain.StatusInUse
 						spool.UpdatedAt = time.Now()
 						_ = s.spoolRepo.Update(ctx, spool)
 					}
 					continue
 				}
-				if spool.CurrentWeight < 200 {
-					if spool.Status != spooldomain.StatusLow {
-						spool.Status = spooldomain.StatusLow
-						spool.UpdatedAt = time.Now()
-						_ = s.spoolRepo.Update(ctx, spool)
-					}
-					continue
+
+				nextStatus := spooldomain.StatusAvailable
+				switch {
+				case spool.CurrentWeight <= 0:
+					nextStatus = spooldomain.StatusEmpty
+				case spool.CurrentWeight < 200:
+					nextStatus = spooldomain.StatusLow
+				default:
+					nextStatus = spooldomain.StatusAvailable
 				}
-				if spool.Status != spooldomain.StatusAvailable {
-					spool.Status = spooldomain.StatusAvailable
+
+				if spool.Status != nextStatus {
+					spool.Status = nextStatus
 					spool.UpdatedAt = time.Now()
 					_ = s.spoolRepo.Update(ctx, spool)
 				}
