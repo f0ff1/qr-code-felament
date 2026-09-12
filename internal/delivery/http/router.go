@@ -250,6 +250,71 @@ func NewRouter() http.Handler {
 	bambuMonitor := bambu.NewMonitor(printerRepo, printJobService, notifyBridge{notifier})
 	bambuMonitor.Start(context.Background())
 
+	mux.HandleFunc("/api/bambu/cloud/sync", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var input struct {
+			Email      string `json:"email"`
+			Password   string `json:"password"`
+			Region     string `json:"region"`
+			VerifyCode string `json:"verifyCode"`
+			Token      string `json:"token"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			jsonError(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		result, err := printerService.SyncFromCloud(context.Background(), printerusecase.CloudSyncInput{
+			Email:      input.Email,
+			Password:   input.Password,
+			Region:     input.Region,
+			VerifyCode: input.VerifyCode,
+			Token:      input.Token,
+		})
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if result.NeedsVerify {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"needs_verification": true,
+				"message":            "Bambu отправил код на email. Введите код и синхронизируйте снова.",
+			})
+			return
+		}
+
+		// Pull live print jobs immediately after sync.
+		bambuMonitor.PollOnce(context.Background())
+
+		printers := make([]map[string]any, 0, len(result.Printers))
+		for _, p := range result.Printers {
+			printers = append(printers, printerJSON(p))
+		}
+		devices := make([]map[string]any, 0, len(result.Devices))
+		for _, d := range result.Devices {
+			devices = append(devices, map[string]any{
+				"serial":       d.Serial,
+				"name":         d.Name,
+				"model":        d.Model,
+				"online":       d.Online,
+				"print_status": d.PrintStatus,
+			})
+		}
+		notifier.Publish("bambu_cloud_synced", "Принтеры синхронизированы из Bambu Cloud", map[string]any{
+			"count": len(result.Printers),
+		})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"needs_verification": false,
+			"printers":           printers,
+			"devices":            devices,
+			"count":              len(result.Printers),
+		})
+	})
+
 	demoCtx, demoCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	ensureDemoData(demoCtx, spoolService, printerService, productService, printJobService)
 	demoCancel()

@@ -36,6 +36,8 @@ const refs = {
   productCostPreview: document.getElementById('productCostPreview'),
   spoolForm: document.getElementById('spoolForm'),
   printerForm: document.getElementById('printerForm'),
+  cloudSyncForm: document.getElementById('cloudSyncForm'),
+  cloudSyncStatus: document.getElementById('cloudSyncStatus'),
   productForm: document.getElementById('productForm'),
   jobForm: document.getElementById('jobForm'),
   spoolFormStatus: document.getElementById('spoolFormStatus'),
@@ -560,7 +562,9 @@ function renderPrinters() {
       const status = getEffectivePrinterStatus(printer.id);
       let modeBadge = '<span class="printer-tag idle">manual</span>';
       if (printer.cloudEnabled) {
-        const cloudLabel = printer.cloudLinked ? 'Cloud' : 'Cloud · код';
+        const cloudLabel = printer.cloudLinked
+          ? `Cloud${printer.status === 'printing' ? ' · печать' : ''}`
+          : 'Cloud · код';
         modeBadge = `<span class="printer-tag cloud">${cloudLabel}</span>`;
       } else if (printer.lanEnabled) {
         modeBadge = `<span class="printer-tag lan">LAN ${printer.lanHost || 'on'}</span>`;
@@ -923,6 +927,41 @@ async function createSpool(event) {
   }
 }
 
+async function syncBambuCloud(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  if (form.dataset.busy === 'true') return;
+  setFormBusy(form, true);
+
+  try {
+    const result = await fetchJSON('/api/bambu/cloud/sync', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: form.cloudEmail.value,
+        password: form.cloudPassword.value,
+        region: form.cloudRegion.value || 'us',
+        verifyCode: form.cloudVerifyCode?.value || '',
+      }),
+    });
+
+    if (result.needs_verification) {
+      notify(result.message || 'Введите код из email и синхронизируйте снова', 'warning', 'Bambu Cloud');
+      form.cloudVerifyCode?.focus();
+      return;
+    }
+
+    const names = (result.devices || []).map((d) => d.name || d.serial).join(', ');
+    notify(`Синхронизировано: ${result.count || 0} · ${names}`, 'success', 'Bambu Cloud');
+    form.cloudVerifyCode.value = '';
+    await loadData();
+  } catch (error) {
+    notify(error.message || 'Не удалось синхронизировать Bambu Cloud', 'error', 'Bambu Cloud');
+  } finally {
+    setFormBusy(form, false);
+  }
+}
+
 async function createPrinter(event) {
   event.preventDefault();
   const form = event.currentTarget;
@@ -934,44 +973,23 @@ async function createPrinter(event) {
     name: form.name.value,
     model: form.model.value,
     lanEnabled: mode === 'lan',
-    cloudEnabled: mode === 'cloud',
+    cloudEnabled: false,
     lanHost: form.lanHost?.value || '',
     lanSerial: form.lanSerial?.value || '',
     lanAccessCode: form.lanAccessCode?.value || '',
-    cloudEmail: form.cloudEmail?.value || '',
-    cloudPassword: form.cloudPassword?.value || '',
-    cloudRegion: form.cloudRegion?.value || 'us',
-    cloudVerifyCode: form.cloudVerifyCode?.value || '',
     defaultSpoolId: form.defaultSpoolId?.value || '',
   };
 
   try {
-    const result = await fetchJSON('/api/printers', {
+    await fetchJSON('/api/printers', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
     if (refs.printerFormStatus) refs.printerFormStatus.textContent = '';
-
-    if (result.needs_verification) {
-      const code = window.prompt('Bambu отправил код на email. Введите код подтверждения:');
-      if (!code) {
-        notify('Принтер сохранён, но Cloud ещё не подтверждён. Добавьте код позже.', 'warning', 'Принтеры');
-      } else {
-        await fetchJSON(`/api/printers/${result.id}/cloud/verify`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ code }),
-        });
-        notify(`Принтер «${form.name.value}» подключён к Bambu Cloud`, 'success', 'Принтеры');
-      }
-    } else {
-      const modeLabel = mode === 'cloud' ? 'через Bambu Cloud' : mode === 'lan' ? 'по LAN' : '';
-      notify(`Принтер «${form.name.value}» добавлен ${modeLabel}`.trim(), 'success', 'Принтеры');
-    }
-
+    notify(`Принтер «${form.name.value}» добавлен`, 'success', 'Принтеры');
     form.reset();
-    if (form.connectionMode) form.connectionMode.value = 'cloud';
+    if (form.connectionMode) form.connectionMode.value = 'none';
     syncPrinterConnectionFields();
     await loadData();
   } catch (error) {
@@ -987,9 +1005,7 @@ function syncPrinterConnectionFields() {
   if (!form) return;
   const mode = form.connectionMode?.value || 'none';
   const lan = document.getElementById('printerLanFields');
-  const cloud = document.getElementById('printerCloudFields');
   if (lan) lan.classList.toggle('hidden', mode !== 'lan');
-  if (cloud) cloud.classList.toggle('hidden', mode !== 'cloud');
 }
 
 async function createProduct(event) {
@@ -1285,6 +1301,7 @@ function bindEvents() {
   });
 
   refs.spoolForm.addEventListener('submit', createSpool);
+  refs.cloudSyncForm?.addEventListener('submit', syncBambuCloud);
   refs.printerForm.addEventListener('submit', createPrinter);
   refs.printerForm?.connectionMode?.addEventListener('change', syncPrinterConnectionFields);
   syncPrinterConnectionFields();

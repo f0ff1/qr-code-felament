@@ -105,6 +105,13 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 		}
 		existing = job
 		created = true
+	} else if isTerminal(existing.Status) && (snap.Status == printjobdomain.StatusPrinting || snap.Status == printjobdomain.StatusPaused || snap.Status == printjobdomain.StatusDraft) {
+		job, createErr := s.createFromBambu(ctx, printer, snap)
+		if createErr != nil {
+			return printjobdomain.PrintJob{}, false, createErr
+		}
+		existing = job
+		created = true
 	}
 
 	changed := false

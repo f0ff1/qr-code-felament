@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	printjobdomain "filamenttracker/internal/domain/printjob"
+	printjobusecase "filamenttracker/internal/usecase/printjob"
 )
 
 func TestMapGcodeState(t *testing.T) {
@@ -27,9 +28,17 @@ func TestMapGcodeState(t *testing.T) {
 }
 
 func TestMapCloudPrintStatus(t *testing.T) {
-	status, active := mapCloudPrintStatus("RUNNING")
+	status, active := mapCloudPrintStatus("ACTIVE")
+	if status != printjobdomain.StatusPrinting || !active {
+		t.Fatalf("ACTIVE => %s/%v", status, active)
+	}
+	status, active = mapCloudPrintStatus("RUNNING")
 	if status != printjobdomain.StatusPrinting || !active {
 		t.Fatalf("RUNNING => %s/%v", status, active)
+	}
+	status, active = mapCloudPrintStatus("SUCCESS")
+	if status != printjobdomain.StatusCompleted || !active {
+		t.Fatalf("SUCCESS => %s/%v", status, active)
 	}
 	status, active = mapCloudPrintStatus("IDLE")
 	if active {
@@ -43,5 +52,27 @@ func TestNormalizeCloudRegion(t *testing.T) {
 	}
 	if got := NormalizeCloudRegion("eu"); got != "us" {
 		t.Fatalf("eu => %s", got)
+	}
+}
+
+func TestMergeCloudSnapshotsPrefersRestActive(t *testing.T) {
+	rest := printjobusecase.BambuSnapshot{
+		ExternalTaskID: "cloud-1",
+		FileName:       "from-rest",
+		Status:         printjobdomain.StatusPrinting,
+		Progress:       1,
+	}
+	mqtt := printjobusecase.BambuSnapshot{
+		ExternalTaskID: "99",
+		FileName:       "from-mqtt",
+		Status:         printjobdomain.StatusQueued,
+		Progress:       42,
+	}
+	snap, active := mergeCloudSnapshots(rest, true, mqtt, false)
+	if !active || snap.Status != printjobdomain.StatusPrinting {
+		t.Fatalf("expected active printing, got %s/%v", snap.Status, active)
+	}
+	if snap.Progress != 42 || snap.FileName != "from-mqtt" {
+		t.Fatalf("expected mqtt progress/name, got %+v", snap)
 	}
 }

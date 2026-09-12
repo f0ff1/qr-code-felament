@@ -36,6 +36,15 @@ type CloudLoginResult struct {
 	NeedsVerify bool
 }
 
+type CloudDevice struct {
+	Serial      string
+	Name        string
+	Model       string
+	Online      bool
+	PrintStatus string
+	AccessCode  string
+}
+
 func CloudLogin(email, password, region string) (CloudLoginResult, error) {
 	email = strings.TrimSpace(email)
 	password = strings.TrimSpace(password)
@@ -75,6 +84,38 @@ func CloudVerify(email, code, region string) (string, error) {
 		return "", fmt.Errorf("empty cloud token after verification")
 	}
 	return token, nil
+}
+
+func ListCloudDevices(token, region string) ([]CloudDevice, error) {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return nil, fmt.Errorf("cloud token is required")
+	}
+	client := newCloudClient(token, region)
+	devices, err := client.ListDevices()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]CloudDevice, 0, len(devices))
+	for _, d := range devices {
+		model := strings.TrimSpace(d.DevProductName)
+		if model == "" {
+			model = strings.TrimSpace(d.DevModelName)
+		}
+		name := strings.TrimSpace(d.Name)
+		if name == "" {
+			name = d.DevID
+		}
+		out = append(out, CloudDevice{
+			Serial:      strings.TrimSpace(d.DevID),
+			Name:        name,
+			Model:       model,
+			Online:      d.Online,
+			PrintStatus: strings.TrimSpace(d.PrintStatus),
+			AccessCode:  strings.TrimSpace(d.DevAccessCode),
+		})
+	}
+	return out, nil
 }
 
 func newCloudClient(token, region string) *bambicloud.Client {
@@ -123,7 +164,8 @@ func snapshotFromCloudData(data bambicloud.Data, weightHint int, materialHint, c
 func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTasksResponse) (printjobusecase.BambuSnapshot, bool) {
 	status, active := mapCloudPrintStatus(device.PrintStatus)
 	fileName := ""
-	taskID := device.DevID + ":" + strings.ToUpper(strings.TrimSpace(device.PrintStatus))
+	// Stable per-device active job id; refined with cloud task id when available.
+	taskID := "cloud-" + strings.TrimSpace(device.DevID)
 	weight := 0
 	material := ""
 	color := ""
@@ -137,7 +179,7 @@ func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTask
 				fileName = hit.Title
 			}
 			if hit.ID != 0 {
-				taskID = strconv.Itoa(hit.ID)
+				taskID = "cloud-task-" + strconv.Itoa(hit.ID)
 			}
 			if hit.Weight > 0 {
 				weight = int(math.Round(hit.Weight))
@@ -159,9 +201,12 @@ func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTask
 	if fileName == "" {
 		fileName = device.Name
 	}
+	if fileName == "" {
+		fileName = device.DevID
+	}
 
 	progress := 0.0
-	if status == printjobdomain.StatusPrinting {
+	if status == printjobdomain.StatusPrinting || status == printjobdomain.StatusPaused {
 		progress = 1
 	} else if status == printjobdomain.StatusCompleted {
 		progress = 100
@@ -178,13 +223,55 @@ func snapshotFromCloudDevice(device bambicloud.Device, tasks *bambicloud.GetTask
 	}, active
 }
 
+func mergeCloudSnapshots(rest printjobusecase.BambuSnapshot, restActive bool, mqtt printjobusecase.BambuSnapshot, mqttActive bool) (printjobusecase.BambuSnapshot, bool) {
+	snap := rest
+	active := restActive || mqttActive
+
+	if mqtt.FileName != "" && mqtt.FileName != "." {
+		snap.FileName = mqtt.FileName
+	}
+	if mqtt.ExternalTaskID != "" {
+		snap.ExternalTaskID = mqtt.ExternalTaskID
+	}
+	if mqtt.Progress > snap.Progress {
+		snap.Progress = mqtt.Progress
+	}
+	if mqtt.RemainingMin > 0 {
+		snap.RemainingMin = mqtt.RemainingMin
+	}
+	if mqtt.MaterialHint != "" {
+		snap.MaterialHint = mqtt.MaterialHint
+	}
+	if mqtt.ColorHint != "" {
+		snap.ColorHint = mqtt.ColorHint
+	}
+	if mqtt.EstimatedWeight > 0 {
+		snap.EstimatedWeight = mqtt.EstimatedWeight
+	}
+
+	// Cloud REST uses ACTIVE; MQTT uses RUNNING. Prefer whichever is active.
+	if restActive {
+		snap.Status = rest.Status
+	} else if mqttActive {
+		snap.Status = mqtt.Status
+	} else if mqtt.Status != "" {
+		snap.Status = mqtt.Status
+	}
+	return snap, active
+}
+
 func mapCloudGcodeState(raw state.GcodeState) (printjobdomain.Status, bool) {
 	return mapGcodeState(string(raw))
 }
 
 func mapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
+	return MapCloudPrintStatus(raw)
+}
+
+// MapCloudPrintStatus maps Bambu Cloud device print_status values.
+func MapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
 	switch strings.ToUpper(strings.TrimSpace(raw)) {
-	case "RUNNING", "PRINTING", "PREPARE", "SLICING":
+	case "ACTIVE", "RUNNING", "PRINTING", "PREPARE", "SLICING", "BUSY", "WORKING":
 		return printjobdomain.StatusPrinting, true
 	case "PAUSE", "PAUSED":
 		return printjobdomain.StatusPaused, true

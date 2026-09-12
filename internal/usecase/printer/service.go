@@ -8,6 +8,7 @@ import (
 
 	"filamenttracker/internal/domain"
 	printerdomain "filamenttracker/internal/domain/printer"
+	printjobdomain "filamenttracker/internal/domain/printjob"
 	"filamenttracker/internal/infrastructure/printer/bambu"
 
 	"github.com/google/uuid"
@@ -111,6 +112,147 @@ func (s *Service) UpdateLAN(ctx context.Context, id uuid.UUID, input CreateInput
 		return printerdomain.Printer{}, err
 	}
 	return p, nil
+}
+
+type CloudSyncInput struct {
+	Email      string
+	Password   string
+	Region     string
+	VerifyCode string
+	Token      string
+}
+
+type CloudSyncResult struct {
+	Printers    []printerdomain.Printer
+	Devices     []bambu.CloudDevice
+	NeedsVerify bool
+	Token       string
+}
+
+func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (CloudSyncResult, error) {
+	region := bambu.NormalizeCloudRegion(input.Region)
+	token := strings.TrimSpace(input.Token)
+	email := strings.TrimSpace(input.Email)
+	password := strings.TrimSpace(input.Password)
+
+	if token == "" {
+		if strings.TrimSpace(input.VerifyCode) != "" {
+			verified, err := bambu.CloudVerify(email, input.VerifyCode, region)
+			if err != nil {
+				return CloudSyncResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
+			}
+			token = verified
+		} else {
+			if email == "" || password == "" {
+				return CloudSyncResult{}, fmt.Errorf("%w: cloud email and password are required", domain.ErrInvalid)
+			}
+			login, err := bambu.CloudLogin(email, password, region)
+			if err != nil {
+				return CloudSyncResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
+			}
+			if login.NeedsVerify {
+				return CloudSyncResult{NeedsVerify: true}, nil
+			}
+			token = login.Token
+		}
+	}
+
+	devices, err := bambu.ListCloudDevices(token, region)
+	if err != nil {
+		return CloudSyncResult{}, fmt.Errorf("%w: list cloud devices: %v", domain.ErrInvalid, err)
+	}
+	if len(devices) == 0 {
+		return CloudSyncResult{Token: token, Devices: devices}, fmt.Errorf("%w: no printers bound to this Bambu account", domain.ErrNotFound)
+	}
+
+	existing, err := s.repo.List(ctx)
+	if err != nil {
+		return CloudSyncResult{}, err
+	}
+	bySerial := make(map[string]printerdomain.Printer, len(existing))
+	for _, p := range existing {
+		if serial := strings.ToUpper(strings.TrimSpace(p.LANSerial)); serial != "" {
+			bySerial[serial] = p
+		}
+	}
+
+	out := make([]printerdomain.Printer, 0, len(devices))
+	for _, device := range devices {
+		if device.Serial == "" {
+			continue
+		}
+		key := strings.ToUpper(device.Serial)
+		model := device.Model
+		if model == "" {
+			model = "Bambu"
+		}
+		name := device.Name
+		if name == "" {
+			name = device.Serial
+		}
+
+		if p, ok := bySerial[key]; ok {
+			p.Name = name
+			p.Model = model
+			p.LANSerial = device.Serial
+			p.LANEnabled = false
+			p.CloudEnabled = true
+			p.CloudEmail = email
+			if password != "" {
+				p.CloudPassword = password
+			}
+			p.CloudToken = token
+			p.CloudRegion = region
+			if device.AccessCode != "" {
+				p.LANAccessCode = device.AccessCode
+			}
+			p.Status = cloudDevicePrinterStatus(device)
+			p.UpdatedAt = time.Now()
+			if err := s.repo.Update(ctx, p); err != nil {
+				return CloudSyncResult{}, err
+			}
+			out = append(out, p)
+			continue
+		}
+
+		p := printerdomain.NewPrinter(name, model)
+		p.LANSerial = device.Serial
+		p.LANAccessCode = device.AccessCode
+		p.CloudEnabled = true
+		p.CloudEmail = email
+		p.CloudPassword = password
+		p.CloudToken = token
+		p.CloudRegion = region
+		p.Status = cloudDevicePrinterStatus(device)
+		if err := s.repo.Create(ctx, p); err != nil {
+			return CloudSyncResult{}, err
+		}
+		out = append(out, p)
+	}
+
+	return CloudSyncResult{
+		Printers: out,
+		Devices:  devices,
+		Token:    token,
+	}, nil
+}
+
+func cloudDevicePrinterStatus(device bambu.CloudDevice) printerdomain.PrinterStatus {
+	if !device.Online {
+		return printerdomain.StatusOffline
+	}
+	status, active := bambu.MapCloudPrintStatus(device.PrintStatus)
+	if !active {
+		return printerdomain.StatusIdle
+	}
+	switch status {
+	case printjobdomain.StatusPaused:
+		return printerdomain.StatusPaused
+	case printjobdomain.StatusFailed:
+		return printerdomain.StatusError
+	default:
+		return printerdomain.StatusPrinting
+	}
 }
 
 func (s *Service) VerifyCloud(ctx context.Context, id uuid.UUID, code string) (printerdomain.Printer, error) {

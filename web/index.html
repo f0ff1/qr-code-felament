@@ -224,9 +224,44 @@
             </div>
             <div id="printerList" class="printer-list"></div>
 
+            <form id="cloudSyncForm" class="data-form">
+              <div class="form-header">
+                <h3>Синхронизация Bambu Cloud</h3>
+              </div>
+              <div class="form-grid">
+                <label>
+                  <span>Регион Bambu</span>
+                  <select name="cloudRegion">
+                    <option value="us">Worldwide (api.bambulab.com)</option>
+                    <option value="cn">China (api.bambulab.cn)</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Email аккаунта Bambu</span>
+                  <input name="cloudEmail" type="email" placeholder="friend@email.com" autocomplete="username" required />
+                </label>
+                <label>
+                  <span>Пароль</span>
+                  <input name="cloudPassword" type="password" placeholder="пароль Bambu Cloud" autocomplete="current-password" required />
+                </label>
+                <label>
+                  <span>Код из email (если попросит)</span>
+                  <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
+                </label>
+                <p class="form-hint form-span-2">
+                  Подтянет все принтеры аккаунта (имя, serial, модель) и начнёт отслеживать печати.
+                  Серийник вводить не нужно.
+                </p>
+              </div>
+              <div class="form-actions">
+                <button type="submit" class="primary-btn">Синхронизировать принтеры</button>
+              </div>
+              <div id="cloudSyncStatus" class="form-status"></div>
+            </form>
+
             <form id="printerForm" class="data-form">
               <div class="form-header">
-                <h3>Добавить принтер</h3>
+                <h3>Добавить принтер вручную</h3>
               </div>
 
               <div class="form-grid">
@@ -241,8 +276,7 @@
                 <label class="form-span-2">
                   <span>Подключение</span>
                   <select name="connectionMode" id="printerConnectionMode">
-                    <option value="none">Без интеграции (вручную)</option>
-                    <option value="cloud" selected>Bambu Cloud (рекомендуется)</option>
+                    <option value="none" selected>Без интеграции (вручную)</option>
                     <option value="lan">LAN (локальная сеть)</option>
                   </select>
                 </label>
@@ -253,41 +287,15 @@
                     <input name="lanHost" type="text" placeholder="192.168.1.50" />
                   </label>
                   <label>
+                    <span>Serial Number</span>
+                    <input name="lanSerial" type="text" placeholder="01P00A000000000" />
+                  </label>
+                  <label>
                     <span>Access Code</span>
                     <input name="lanAccessCode" type="password" placeholder="код из настроек принтера" autocomplete="off" />
                   </label>
                 </div>
 
-                <div id="printerCloudFields" class="form-span-2 form-grid">
-                  <label>
-                    <span>Регион Bambu</span>
-                    <select name="cloudRegion">
-                      <option value="us">Worldwide (api.bambulab.com)</option>
-                      <option value="cn">China (api.bambulab.cn)</option>
-                    </select>
-                  </label>
-                  <label>
-                    <span>Email аккаунта Bambu</span>
-                    <input name="cloudEmail" type="email" placeholder="friend@email.com" autocomplete="username" />
-                  </label>
-                  <label>
-                    <span>Пароль</span>
-                    <input name="cloudPassword" type="password" placeholder="пароль Bambu Cloud" autocomplete="current-password" />
-                  </label>
-                  <label>
-                    <span>Код из email (если попросит)</span>
-                    <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
-                  </label>
-                  <p class="form-hint form-span-2">
-                    Друг делится доступом: войдите в его Bambu-аккаунт. Принтер должен быть привязан к этому аккаунту.
-                    Работает с Railway без Tailscale.
-                  </p>
-                </div>
-
-                <label>
-                  <span>Serial Number</span>
-                  <input name="lanSerial" type="text" placeholder="01P00A000000000" />
-                </label>
                 <label>
                   <span>Катушка по умолчанию</span>
                   <select name="defaultSpoolId" id="printerDefaultSpoolId">

@@ -218,6 +218,10 @@ func (m *Monitor) pollLANPrinter(ctx context.Context, p printerdomain.Printer) e
 	return m.applySnapshot(ctx, p, snap, active)
 }
 
+func (m *Monitor) PollOnce(ctx context.Context) {
+	m.tick(ctx)
+}
+
 func (m *Monitor) pollCloudPrinter(ctx context.Context, p printerdomain.Printer) error {
 	session, err := m.ensureCloudSession(ctx, &p)
 	if err != nil {
@@ -237,48 +241,47 @@ func (m *Monitor) pollCloudPrinter(ctx context.Context, p printerdomain.Printer)
 		return fmt.Errorf("device %s not bound to cloud account", p.LANSerial)
 	}
 	if !device.Online {
+		// Still sync terminal print_status so a finished job can close.
+		restSnap, restActive := snapshotFromCloudDevice(device, nil)
+		if restActive || restSnap.Status == printjobdomain.StatusCompleted || restSnap.Status == printjobdomain.StatusFailed {
+			return m.applySnapshot(ctx, p, restSnap, true)
+		}
 		m.markOffline(ctx, p)
 		return nil
 	}
 
-	tasks, _ := session.client.GetTasks(p.LANSerial)
-	weightHint := 0
-	materialHint := ""
-	colorHint := ""
-	if tasks != nil {
-		restSnap, _ := snapshotFromCloudDevice(device, tasks)
-		weightHint = restSnap.EstimatedWeight
-		materialHint = restSnap.MaterialHint
-		colorHint = restSnap.ColorHint
+	tasks, taskErr := session.client.GetTasks(p.LANSerial)
+	if taskErr != nil {
+		log.Printf("bambu cloud tasks %s: %v", p.Name, taskErr)
 	}
+	restSnap, restActive := snapshotFromCloudDevice(device, tasks)
 
 	if session.pool != nil {
 		dataMap, dataErr := session.pool.GetData()
 		if dataErr == nil {
-			if data, ok := dataMap[device.DevID]; ok && string(data.GcodeState) != "" && string(data.GcodeState) != "UNKNOWN" {
-				snap, active := snapshotFromCloudData(data, weightHint, materialHint, colorHint)
-				if snap.FileName == "" || snap.ExternalTaskID == "" {
-					restSnap, restActive := snapshotFromCloudDevice(device, tasks)
-					if snap.FileName == "" {
-						snap.FileName = restSnap.FileName
-					}
-					if snap.ExternalTaskID == "" {
-						snap.ExternalTaskID = restSnap.ExternalTaskID
-					}
-					if !active {
-						active = restActive
-						snap.Status = restSnap.Status
-					}
+			if data, ok := dataMap[device.DevID]; ok {
+				mqttSnap, mqttActive := snapshotFromCloudData(data, restSnap.EstimatedWeight, restSnap.MaterialHint, restSnap.ColorHint)
+				if mqttSnap.ExternalTaskID == "" {
+					mqttSnap.ExternalTaskID = restSnap.ExternalTaskID
 				}
-				return m.applySnapshot(ctx, p, snap, active)
+				if mqttSnap.FileName == "" || mqttSnap.FileName == "." {
+					mqttSnap.FileName = restSnap.FileName
+				}
+				snap, active := mergeCloudSnapshots(restSnap, restActive, mqttSnap, mqttActive)
+				if active || snap.Status == printjobdomain.StatusCompleted || snap.Status == printjobdomain.StatusFailed {
+					return m.applySnapshot(ctx, p, snap, true)
+				}
+				return m.applySnapshot(ctx, p, snap, false)
 			}
 		} else {
 			log.Printf("bambu cloud mqtt data %s: %v", p.Name, dataErr)
 		}
 	}
 
-	snap, active := snapshotFromCloudDevice(device, tasks)
-	return m.applySnapshot(ctx, p, snap, active)
+	if restActive || restSnap.Status == printjobdomain.StatusCompleted || restSnap.Status == printjobdomain.StatusFailed {
+		return m.applySnapshot(ctx, p, restSnap, true)
+	}
+	return m.applySnapshot(ctx, p, restSnap, false)
 }
 
 func (m *Monitor) ensureCloudSession(ctx context.Context, p *printerdomain.Printer) (*cloudSession, error) {
