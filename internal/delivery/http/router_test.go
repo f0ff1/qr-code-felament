@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -98,6 +99,66 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 	}
 	if !strings.Contains(page, "780 г") {
 		t.Fatalf("rendered page should show future remaining from DB, got: %s", page)
+	}
+	if !strings.Contains(page, `href="https://example.com/"`) {
+		t.Fatalf("rendered page should link home to public origin, got: %s", page)
+	}
+}
+
+func TestPublicSpoolPageAndQRImage(t *testing.T) {
+	t.Setenv("RAILWAY_PUBLIC_DOMAIN", "filament.up.railway.app")
+	t.Setenv("PUBLIC_BASE_URL", "http://localhost:8080")
+
+	handler := NewRouter()
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/spools", nil)
+	listRes := httptest.NewRecorder()
+	handler.ServeHTTP(listRes, listReq)
+	if listRes.Code != http.StatusOK {
+		t.Fatalf("list status = %d", listRes.Code)
+	}
+
+	var spools []map[string]any
+	if err := json.NewDecoder(listRes.Body).Decode(&spools); err != nil {
+		t.Fatalf("decode spools: %v", err)
+	}
+	if len(spools) == 0 {
+		t.Fatal("expected demo spools")
+	}
+	token, _ := spools[0]["qr_token"].(string)
+	if token == "" {
+		t.Fatal("missing qr_token")
+	}
+
+	pageReq := httptest.NewRequest(http.MethodGet, "/spool/"+token, nil)
+	pageRes := httptest.NewRecorder()
+	handler.ServeHTTP(pageRes, pageReq)
+	if pageRes.Code != http.StatusOK {
+		t.Fatalf("public page status = %d body=%s", pageRes.Code, pageRes.Body.String())
+	}
+	body := pageRes.Body.String()
+	if !strings.Contains(body, "На главную") {
+		t.Fatalf("public page missing home link: %s", body)
+	}
+	if !strings.Contains(body, `href="https://filament.up.railway.app/"`) {
+		t.Fatalf("public page home link should use railway origin, got: %s", body)
+	}
+	if !strings.Contains(body, "Остаток на данный момент") {
+		t.Fatalf("public page missing stats: %s", body)
+	}
+
+	qrReq := httptest.NewRequest(http.MethodGet, "/public/spools/qr/"+token, nil)
+	qrReq.Host = "localhost:8080"
+	qrRes := httptest.NewRecorder()
+	handler.ServeHTTP(qrRes, qrReq)
+	if qrRes.Code != http.StatusOK {
+		t.Fatalf("qr status = %d body=%s", qrRes.Code, qrRes.Body.String())
+	}
+	if ct := qrRes.Header().Get("Content-Type"); ct != "image/png" {
+		t.Fatalf("qr content-type = %s", ct)
+	}
+	if len(qrRes.Body.Bytes()) < 100 {
+		t.Fatal("qr image too small")
 	}
 }
 

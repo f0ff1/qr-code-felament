@@ -22,9 +22,12 @@ func NewClient(addr string) (*Client, error) {
 		Addr:         addr,
 		Password:     "",
 		DB:           0,
-		PoolSize:     10,
-		ReadTimeout:  3 * time.Second,
-		WriteTimeout: 3 * time.Second,
+		PoolSize:     64,
+		MinIdleConns: 8,
+		DialTimeout:  2 * time.Second,
+		ReadTimeout:  1 * time.Second,
+		WriteTimeout: 1 * time.Second,
+		PoolTimeout:  2 * time.Second,
 	})
 
 	if err := client.Ping(context.Background()).Err(); err != nil {
@@ -44,7 +47,7 @@ func (c *Client) WriteJSON(ctx context.Context, key string, value any) error {
 	if err != nil {
 		return fmt.Errorf("marshal cache value: %w", err)
 	}
-	if err := c.Set(ctx, key, payload, 0).Err(); err != nil {
+	if err := c.Set(ctx, key, payload, 2*time.Minute).Err(); err != nil {
 		return fmt.Errorf("write cache %s: %w", key, err)
 	}
 	return nil

@@ -32,10 +32,11 @@ func Open(dsn string) (*sql.DB, error) {
 		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
-	db.SetMaxOpenConns(25)
-	db.SetMaxIdleConns(5)
-	db.SetConnMaxLifetime(5 * time.Minute)
-	db.SetConnMaxIdleTime(1 * time.Minute)
+	// Tuned for ~8 vCPU / 8 GiB app + Postgres: enough concurrency without saturating DB.
+	db.SetMaxOpenConns(64)
+	db.SetMaxIdleConns(16)
+	db.SetConnMaxLifetime(30 * time.Minute)
+	db.SetConnMaxIdleTime(5 * time.Minute)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()

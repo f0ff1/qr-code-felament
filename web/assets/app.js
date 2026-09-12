@@ -7,6 +7,9 @@ const state = {
   filter: 'all',
   query: '',
   jobRuntimeStarts: {},
+  loading: false,
+  lastFullSyncAt: 0,
+  completedNotified: new Set(),
 };
 
 const refs = {
@@ -42,6 +45,7 @@ const refs = {
   jobPrinterId: document.getElementById('jobPrinterId'),
   jobProductId: document.getElementById('jobProductId'),
   jobSpoolId: document.getElementById('jobSpoolId'),
+  toastStack: document.getElementById('toastStack'),
 };
 
 async function fetchJSON(url, options = {}, timeoutMs = 10000) {
@@ -72,17 +76,22 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
   }
 }
 
+function isActiveJobStatus(status) {
+  return ['printing', 'paused', 'queued'].includes(String(status ?? '').toLowerCase());
+}
+
 function getSpoolStatus(spool) {
   const remaining = Number(spool.remaining_weight ?? spool.remaining ?? 0);
   const initial = Number(spool.initial_weight ?? spool.initial ?? 0);
-  const base = String(spool.status ?? 'available').toLowerCase();
-  const activeJobs = Array.isArray(state.jobs)
-    ? state.jobs.filter((job) => String(job.spoolId) === String(spool.id) && ['printing', 'paused', 'queued'].includes(String(job.status ?? '').toLowerCase()))
-    : [];
+  const spoolId = String(spool.id ?? '');
+  const hasActiveJob = state.jobs.some((job) => {
+    if (String(job.spoolId) !== spoolId) return false;
+    return isActiveJobStatus(getEffectiveJobStatus(job));
+  });
 
-  if (base === 'in_use' || activeJobs.length > 0) return 'in_use';
-  if (remaining <= 0 || base === 'empty') return 'empty';
-  if (remaining < 200 || remaining <= Math.max(50, initial * 0.2)) return 'low';
+  if (hasActiveJob) return 'in_use';
+  if (remaining <= 0) return 'empty';
+  if (remaining < 200 || (initial > 0 && remaining <= Math.max(50, initial * 0.2))) return 'low';
   return 'available';
 }
 
@@ -97,7 +106,8 @@ function normalizeSpool(spool) {
     manufacturer: spool.manufacturer,
     remaining,
     initial,
-    status: getSpoolStatus(spool),
+    price: Number(spool.price ?? 0),
+    status: 'available',
     qr: spool.qr_token ?? spool.qr ?? '—',
   };
 }
@@ -174,9 +184,12 @@ function buildEstimatedPrintTime(hours, minutes) {
 
 function getEffectiveJobStatus(job) {
   if (!job) return 'queued';
+  if (job.status === 'completed' || job.status === 'failed' || job.status === 'cancelled') {
+    return job.status;
+  }
 
   const progress = getJobProgress(job);
-  if (['printing', 'paused'].includes(job.status) && progress >= 100) {
+  if (isActiveJobStatus(job.status) && progress >= 100) {
     return 'completed';
   }
 
@@ -200,8 +213,7 @@ function getJobProgress(job) {
 
   const elapsed = Math.max(0, Date.now() - startTime);
   const progress = (elapsed / durationMs) * 100;
-  const capped = Math.min(100, Math.max(0, progress));
-  return capped >= 100 ? 100 : capped;
+  return Math.min(100, Math.max(0, progress));
 }
 
 function getJobRemainingEstimate(job) {
@@ -210,7 +222,10 @@ function getJobRemainingEstimate(job) {
 }
 
 function getSpoolCurrentDisplay(spool) {
-  const activeJobs = state.jobs.filter((job) => job.spoolId === spool.id && ['printing', 'paused'].includes(job.status));
+  const activeJobs = state.jobs.filter((job) => {
+    if (String(job.spoolId) !== String(spool.id)) return false;
+    return ['printing', 'paused'].includes(getEffectiveJobStatus(job));
+  });
   const futureRemaining = Number(spool.remaining ?? 0);
   const consumedFromJobs = activeJobs.reduce((total, job) => {
     const weight = getJobRemainingEstimate(job);
@@ -218,6 +233,27 @@ function getSpoolCurrentDisplay(spool) {
     return total + weight * (1 - progress);
   }, 0);
   return Math.max(0, futureRemaining + consumedFromJobs);
+}
+
+function refreshDerivedState() {
+  let completedNow = false;
+  state.jobs.forEach((job) => {
+    if (!isActiveJobStatus(job.status)) return;
+    if (getJobProgress(job) < 100) return;
+    job.status = 'completed';
+    job.progress = 100;
+    completedNow = true;
+  });
+
+  state.spools.forEach((spool) => {
+    spool.status = getSpoolStatus(spool);
+  });
+
+  return completedNow;
+}
+
+function getActiveJobs() {
+  return state.jobs.filter((job) => isActiveJobStatus(getEffectiveJobStatus(job)));
 }
 
 function updateClock() {
@@ -242,7 +278,9 @@ function translateStatus(status) {
   return map[status] || status;
 }
 
-async function loadData() {
+async function loadData({ soft = false } = {}) {
+  if (state.loading) return;
+  state.loading = true;
   try {
     const [spools, printers, products, jobs] = await Promise.all([
       fetchJSON('/api/spools'),
@@ -255,17 +293,51 @@ async function loadData() {
     state.printers = Array.isArray(printers) ? printers.map(normalizePrinter) : [];
     state.products = Array.isArray(products) ? products.map(normalizeProduct) : [];
     state.jobs = Array.isArray(jobs) ? jobs.map(normalizeJob) : [];
+    state.lastFullSyncAt = Date.now();
+
+    refreshDerivedState();
+    renderAll();
+  } catch (error) {
+    if (!soft) {
+      notify('Не удалось загрузить данные панели', 'error');
+    }
+  } finally {
+    state.loading = false;
+  }
+}
+
+async function loadJobsFast() {
+  try {
+    const jobs = await fetchJSON('/api/print-jobs', {}, 5000);
+    if (!Array.isArray(jobs)) return;
+    state.jobs = jobs.map(normalizeJob);
+    refreshDerivedState();
+
+    for (const job of state.jobs) {
+      if (job.status === 'completed' && !state.completedNotified.has(job.id)) {
+        state.completedNotified.add(job.id);
+        notify(`Печать завершена: ${String(job.id).slice(0, 8)}`, 'success', 'Печать');
+      }
+    }
 
     renderSummary();
     renderOverview();
-    renderSpools();
     renderPrinters();
-    renderProducts();
     renderJobs();
-    renderJobOptions();
-  } catch (error) {
-    appendActivity('Не удалось загрузить данные панели', 'error');
+    renderSpools();
+  } catch (_error) {
+    // soft fail: next tick retries
   }
+}
+
+function renderAll() {
+  renderSummary();
+  renderOverview();
+  renderSpools();
+  renderPrinters();
+  renderProducts();
+  renderJobs();
+  renderJobOptions();
 }
 
 function getMaterialColor(material) {
@@ -286,82 +358,65 @@ function getFilteredSpools() {
     const matchesQuery = !query || [spool.material, spool.color, spool.manufacturer, spool.qr].some((value) =>
       String(value).toLowerCase().includes(query)
     );
+    if (!matchesQuery) return false;
 
-    if (state.filter === 'all') {
-      return matchesQuery;
-    }
-    if (state.filter === 'low') {
-      return matchesQuery && Number(spool.remaining ?? 0) < 200;
-    }
-    if (state.filter === 'available') {
-      return matchesQuery && Number(spool.remaining ?? 0) > 0;
-    }
-
-    return false;
+    if (state.filter === 'all') return true;
+    if (state.filter === 'low') return spool.status === 'low' || spool.status === 'empty' || Number(spool.remaining ?? 0) < 200;
+    if (state.filter === 'available') return spool.status === 'available' || Number(spool.remaining ?? 0) > 0;
+    return true;
   });
 }
 
 function renderSummary() {
+  refreshDerivedState();
+  const lowCount = state.spools.filter((spool) => spool.status === 'low' || spool.status === 'empty').length;
+  const activeCount = getActiveJobs().length;
+
   refs.totalSpools.textContent = String(state.spools.length);
-  refs.lowStockCount.textContent = String(state.spools.filter((spool) => spool.status === 'low' || spool.status === 'empty').length);
-  refs.activePrints.textContent = String(state.jobs.filter((job) => ['printing', 'paused', 'queued'].includes(job.status)).length);
+  refs.lowStockCount.textContent = String(lowCount);
+  refs.activePrints.textContent = String(activeCount);
   refs.printerCount.textContent = String(state.printers.length);
-  refs.alertCount.textContent = `${Math.max(0, state.spools.filter((spool) => spool.status === 'low' || spool.status === 'empty').length)} уведомлений`;
+  refs.alertCount.textContent = `${lowCount} уведомлений`;
   updateClock();
 }
 
 function getEffectivePrinterStatus(printerId) {
-  const hasActiveJob = state.jobs.some((job) => String(job.printerId) === String(printerId) && ['printing', 'paused', 'queued'].includes(String(job.status ?? '').toLowerCase()));
+  const hasActiveJob = state.jobs.some((job) => {
+    if (String(job.printerId) !== String(printerId)) return false;
+    return isActiveJobStatus(getEffectiveJobStatus(job));
+  });
   return hasActiveJob ? 'printing' : 'idle';
 }
 
 function renderOverview() {
-  state.jobs.forEach((job) => {
-    if (['printing', 'paused'].includes(job.status) && getJobProgress(job) >= 100) {
-      job.status = 'completed';
-    }
-  });
+  refreshDerivedState();
 
   const spoolList = [...state.spools]
     .filter((spool) => {
       if (state.filter === 'all') return true;
-      if (state.filter === 'low') return Number(spool.remaining ?? 0) < 200;
-      if (state.filter === 'available') return Number(spool.remaining ?? 0) > 0;
+      if (state.filter === 'low') return spool.status === 'low' || spool.status === 'empty' || Number(spool.remaining ?? 0) < 200;
+      if (state.filter === 'available') return spool.status === 'available' || Number(spool.remaining ?? 0) > 0;
       return false;
     })
     .sort((a, b) => b.remaining - a.remaining)
-    .slice(0, 4);
+    .slice(0, 6);
 
-  const taskList = state.jobs.filter((job) => {
-    const effectiveStatus = getEffectiveJobStatus(job);
-    if (state.filter === 'all') return true;
-    if (state.filter === 'printing') return ['printing', 'paused', 'queued'].includes(effectiveStatus);
-    if (state.filter === 'completed') return effectiveStatus === 'completed';
-    return false;
-  }).slice(0, 4);
+  const taskList = state.jobs
+    .filter((job) => {
+      const effectiveStatus = getEffectiveJobStatus(job);
+      if (state.filter === 'completed') return effectiveStatus === 'completed';
+      if (state.filter === 'printing') return isActiveJobStatus(effectiveStatus);
+      if (state.filter === 'all' || state.filter === 'low' || state.filter === 'available') {
+        return isActiveJobStatus(effectiveStatus);
+      }
+      return false;
+    })
+    .slice(0, 6);
 
   if (!refs.overviewSpoolList || !refs.overviewJobList) return;
 
-  if (state.filter === 'printing' || state.filter === 'completed' || state.filter === 'low' || state.filter === 'available') {
-    refs.overviewSpoolList.innerHTML = state.filter === 'low' || state.filter === 'available'
-      ? (spoolList.length
-        ? spoolList.map((spool) => {
-            const currentDisplay = getSpoolCurrentDisplay(spool);
-            return `
-              <div class="overview-item">
-                <div>
-                  <strong>${spool.material}</strong>
-                  <span>${spool.color} • ${spool.manufacturer}</span>
-                </div>
-                <div class="overview-meta">
-                  <span>${Math.round(currentDisplay)}g</span>
-                  <em class="overview-status ${spool.status === 'low' ? 'low' : spool.status}">${spool.status === 'empty' ? 'закончился' : translateStatus(spool.status)}</em>
-                </div>
-              </div>
-            `;
-          }).join('')
-        : '<div class="empty-state compact"><h3>Катушки не найдены</h3><p>Нет катушек по этому фильтру.</p></div>')
-      : '<div class="empty-state compact"><h3>Катушки скрыты фильтром</h3><p>Сейчас показаны только задачи.</p></div>';
+  if (state.filter === 'printing' || state.filter === 'completed') {
+    refs.overviewSpoolList.innerHTML = '<div class="empty-state compact"><h3>Катушки скрыты фильтром</h3><p>Сейчас показаны только задачи.</p></div>';
   } else {
     refs.overviewSpoolList.innerHTML = spoolList.length
       ? spoolList.map((spool) => {
@@ -401,7 +456,7 @@ function renderOverview() {
           </div>
         `;
       }).join('')
-    : '<div class="empty-state compact"><h3>Задач нет</h3><p>Новые задачи появятся здесь сразу после запуска.</p></div>';
+    : '<div class="empty-state compact"><h3>Активных печатей нет</h3><p>Завершённые задачи сразу исчезают из этой графы.</p></div>';
 }
 
 function getSpoolBarStyle(remaining, initial) {
@@ -438,7 +493,8 @@ function renderSpools() {
       const bar = getSpoolBarStyle(currentDisplay, spool.initial);
       const statusClass = spool.status === 'low' ? 'low' : spool.status;
       const displayStatus = spool.status === 'empty' ? 'закончился' : translateStatus(spool.status);
-      const qrUrl = `/public/spools/qr/${spool.qr}`;
+      const qrImageUrl = `/public/spools/qr/${spool.qr}`;
+      const qrPageUrl = `/spool/${spool.qr}`;
 
       return `
         <tr class="spool-row ${statusClass}">
@@ -459,8 +515,8 @@ function renderSpools() {
           </td>
           <td>${futureRemaining}g</td>
           <td>
-            <a class="qr-link" href="${qrUrl}" target="_blank" rel="noopener noreferrer" download>
-              <img class="qr-thumb" src="${qrUrl}" alt="QR-${spool.qr}" title="Открыть QR-код и скачать" />
+            <a class="qr-link" href="${qrPageUrl}" target="_blank" rel="noopener noreferrer">
+              <img class="qr-thumb" src="${qrImageUrl}" alt="QR-${spool.qr}" title="Открыть статистику катушки" />
             </a>
           </td>
           <td>
@@ -524,13 +580,19 @@ function renderProducts() {
 }
 
 function renderJobs() {
-  if (!state.jobs.length) {
+  const ordered = [...state.jobs].sort((a, b) => {
+    const aActive = isActiveJobStatus(getEffectiveJobStatus(a)) ? 0 : 1;
+    const bActive = isActiveJobStatus(getEffectiveJobStatus(b)) ? 0 : 1;
+    return aActive - bActive;
+  });
+
+  if (!ordered.length) {
     refs.jobList.innerHTML = '<div class="empty-state"><h3>Задач нет</h3><p>Нет активных задач печати.</p></div>';
     return;
   }
 
-  refs.jobList.innerHTML = state.jobs
-    .slice(0, 4)
+  refs.jobList.innerHTML = ordered
+    .slice(0, 8)
     .map((job) => {
       const effectiveStatus = getEffectiveJobStatus(job);
       const isCompleted = effectiveStatus === 'completed';
@@ -648,7 +710,9 @@ function bindProductCostEvents() {
   });
 }
 
-function appendActivity(message, type = 'info') {
+function showToast(message, type = 'info', title = '') {
+  if (!refs.toastStack) return;
+
   const iconMap = {
     success: '✓',
     warning: '!',
@@ -656,6 +720,43 @@ function appendActivity(message, type = 'info') {
     info: '◌',
   };
 
+  const titleMap = {
+    success: 'Успешно',
+    warning: 'Внимание',
+    error: 'Ошибка',
+    info: 'Уведомление',
+  };
+
+  const toast = document.createElement('div');
+  toast.className = `toast ${type}`;
+  toast.innerHTML = `
+    <div class="toast-icon">${iconMap[type] || '◌'}</div>
+    <div class="toast-copy">
+      <strong>${title || titleMap[type] || 'Уведомление'}</strong>
+      <span>${message}</span>
+    </div>
+    <button class="toast-close" type="button" aria-label="Закрыть">×</button>
+  `;
+
+  const remove = () => {
+    toast.classList.add('hide');
+    window.setTimeout(() => toast.remove(), 240);
+  };
+
+  toast.querySelector('.toast-close')?.addEventListener('click', remove);
+  refs.toastStack.appendChild(toast);
+  while (refs.toastStack.children.length > 4) {
+    refs.toastStack.firstElementChild?.remove();
+  }
+  window.setTimeout(remove, 4200);
+}
+
+function notify(message, type = 'info', title = '') {
+  appendActivity(message, type);
+  showToast(message, type, title);
+}
+
+function appendActivity(message, type = 'info') {
   const item = {
     id: globalThis.crypto?.randomUUID ? globalThis.crypto.randomUUID() : String(Date.now()),
     type,
@@ -693,21 +794,51 @@ function renderActivity() {
 function connectEvents() {
   if (!window.EventSource) return;
 
+  let reconnectToastAt = 0;
   const source = new EventSource('/events');
 
   source.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      const message = data.message || data.type || 'Получено событие';
-      appendActivity(message, data.type || 'info');
-    } catch (error) {
-      appendActivity('Получено событие в реальном времени', 'info');
+      const type = String(data.type || 'info');
+      const mapped = mapServerEvent(type, data.message || 'Получено событие');
+      if (type === 'spool_low' || type === 'print_completed') {
+        notify(mapped.message, mapped.level, mapped.title);
+      } else {
+        appendActivity(mapped.message, mapped.level);
+      }
+    } catch (_error) {
+      // ignore malformed payloads
     }
+    loadData({ soft: true });
   };
 
   source.onerror = () => {
-    appendActivity('Связь в реальном времени потеряна. Повторное подключение...', 'warning');
+    const now = Date.now();
+    if (now - reconnectToastAt > 15000) {
+      reconnectToastAt = now;
+      showToast('Связь в реальном времени переподключается…', 'warning', 'Сеть');
+    }
   };
+}
+
+function mapServerEvent(type, message) {
+  if (type === 'spool_created') {
+    return { title: 'Склад', message: 'Добавлена новая катушка', level: 'success' };
+  }
+  if (type === 'printer_created') {
+    return { title: 'Принтеры', message: 'Добавлен новый принтер', level: 'success' };
+  }
+  if (type === 'print_started') {
+    return { title: 'Печать', message: 'Запущена новая задача печати', level: 'success' };
+  }
+  if (type === 'spool_low') {
+    return { title: 'Склад', message: message || 'Мало филамента', level: 'warning' };
+  }
+  if (type === 'print_completed') {
+    return { title: 'Печать', message: 'Задача печати завершена', level: 'success' };
+  }
+  return { title: 'Событие', message, level: 'info' };
 }
 
 function setFormBusy(form, isBusy) {
@@ -744,21 +875,23 @@ async function createSpool(event) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(payload),
     });
-    const qrUrl = `/public/spools/qr/${result.qr_token}`;
+    const qrImageUrl = `/public/spools/qr/${result.qr_token}`;
+    const qrPageUrl = `/spool/${result.qr_token}`;
     refs.spoolFormStatus.innerHTML = `
       <div class="created-item">
         <strong>Катушка создана</strong>
-        <a href="${qrUrl}" target="_blank" rel="noopener noreferrer" download>
-          <img src="${qrUrl}" alt="QR-код" />
+        <a href="${qrPageUrl}" target="_blank" rel="noopener noreferrer">
+          <img src="${qrImageUrl}" alt="QR-код" />
         </a>
       </div>
     `;
     appendActivity(`Катушка создана: ${result.qr_token}`, 'success');
+    showToast(`Катушка ${result.qr_token} добавлена на склад`, 'success', 'Склад');
     form.reset();
     await loadData();
   } catch (error) {
     refs.spoolFormStatus.textContent = error.message;
-    appendActivity('Не удалось создать катушку', 'error');
+    notify(error.message || 'Не удалось создать катушку', 'error', 'Склад');
   } finally {
     setFormBusy(form, false);
   }
@@ -780,12 +913,12 @@ async function createPrinter(event) {
       }),
     });
     refs.printerFormStatus.textContent = `Принтер создан: ${result.id}`;
-    appendActivity(`Принтер создан: ${form.name.value}`, 'success');
+    notify(`Принтер «${form.name.value}» добавлен`, 'success', 'Принтеры');
     form.reset();
     await loadData();
   } catch (error) {
     refs.printerFormStatus.textContent = error.message;
-    appendActivity('Не удалось создать принтер', 'error');
+    notify(error.message || 'Не удалось создать принтер', 'error', 'Принтеры');
   } finally {
     setFormBusy(form, false);
   }
@@ -826,13 +959,13 @@ async function createProduct(event) {
       }),
     });
     refs.productFormStatus.textContent = `Продукт создан: ${result.name}`;
-    appendActivity(`Продукт создан: ${result.name}`, 'success');
+    notify(`Продукт «${result.name}» добавлен`, 'success', 'Продукты');
     form.reset();
     refs.productCostPreview.textContent = '0.00 ₽';
     await loadData();
   } catch (error) {
     refs.productFormStatus.textContent = error.message;
-    appendActivity('Не удалось создать продукт', 'error');
+    notify(error.message || 'Не удалось создать продукт', 'error', 'Продукты');
   } finally {
     setFormBusy(form, false);
   }
@@ -861,12 +994,12 @@ async function createPrintJob(event) {
     });
     state.jobRuntimeStarts[result.id] = Date.now();
     refs.jobFormStatus.textContent = `Задача создана: ${result.id}`;
-    appendActivity(`Задача запускается: ${result.id}`, 'success');
+    notify(`Задача печати запущена`, 'success', 'Печать');
     form.reset();
     await loadData();
   } catch (error) {
     refs.jobFormStatus.textContent = error.message;
-    appendActivity('Не удалось создать задачу печати', 'error');
+    notify(error.message || 'Не удалось создать задачу печати', 'error', 'Печать');
   } finally {
     setFormBusy(form, false);
   }
@@ -899,10 +1032,10 @@ async function deleteItem(type, id) {
     if (!response.ok) {
       throw new Error('Не удалось удалить запись');
     }
-    appendActivity(`Удалено: ${label}`, 'success');
+    notify(`Удалено: ${label}`, 'success');
     await loadData();
   } catch (error) {
-    appendActivity(error.message || 'Ошибка удаления', 'error');
+    notify(error.message || 'Ошибка удаления', 'error');
   }
 }
 
@@ -912,20 +1045,41 @@ async function toggleJobStatus(id, action) {
     if (!response.ok) {
       throw new Error('Не удалось изменить состояние задачи');
     }
-    appendActivity(action === 'pause' ? 'Задача приостановлена' : 'Задача продолжена', 'success');
+    notify(action === 'pause' ? 'Задача приостановлена' : 'Задача продолжена', 'success', 'Печать');
     await loadData();
   } catch (error) {
-    appendActivity(error.message || 'Ошибка изменения статуса', 'error');
+    notify(error.message || 'Ошибка изменения статуса', 'error', 'Печать');
   }
 }
 
 function bindEvents() {
+  // Local UI tick: progress/status without hitting the network.
   setInterval(() => {
+    const completed = refreshDerivedState();
+    if (completed) {
+      for (const job of state.jobs) {
+        if (job.status === 'completed' && !state.completedNotified.has(job.id)) {
+          state.completedNotified.add(job.id);
+          notify(`Печать завершена: ${String(job.id).slice(0, 8)}`, 'success', 'Печать');
+        }
+      }
+    }
     renderSummary();
     renderOverview();
     renderSpools();
+    renderPrinters();
     renderJobs();
-  }, 5000);
+  }, 1000);
+
+  // Light API poll for jobs/status (~2s).
+  setInterval(() => {
+    loadJobsFast();
+  }, 2000);
+
+  // Full snapshot less often to keep DB/API load modest.
+  setInterval(() => {
+    loadData({ soft: true });
+  }, 12000);
 
   bindProductCostEvents();
 
@@ -943,7 +1097,7 @@ function bindEvents() {
       if (next === null) return;
       const parsed = Number(next);
       if (!Number.isFinite(parsed) || parsed < 0) {
-        appendActivity('Остаток не может быть отрицательным', 'error');
+        notify('Остаток не может быть отрицательным', 'error', 'Склад');
         return;
       }
 
@@ -956,10 +1110,10 @@ function bindEvents() {
         if (!response.ok) {
           throw new Error('Не удалось обновить остаток');
         }
-        appendActivity(`Остаток обновлён: ${Math.round(parsed)} г`, 'success');
+        notify(`Остаток обновлён: ${Math.round(parsed)} г`, 'success', 'Склад');
         await loadData();
       } catch (error) {
-        appendActivity(error.message || 'Ошибка обновления остатка', 'error');
+        notify(error.message || 'Ошибка обновления остатка', 'error', 'Склад');
       }
       return;
     }
@@ -1027,7 +1181,7 @@ function bindEvents() {
 function init() {
   bindEvents();
   connectEvents();
-  appendActivity('Система готова', 'success');
+  notify('Система готова', 'success', 'Filament Tracker');
   loadData();
 }
 

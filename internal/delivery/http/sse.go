@@ -31,7 +31,7 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case evt := <-ch:
-				_, _ = fmt.Fprintf(w, "event: %s\ndata: %s\n\n", evt.Type, toJSON(evt))
+				_, _ = fmt.Fprintf(w, "data: %s\n\n", toJSON(evt))
 				flusher.Flush()
 			case <-time.After(15 * time.Second):
 				_, _ = fmt.Fprint(w, ": heartbeat\n\n")
