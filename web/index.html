@@ -189,8 +189,11 @@
                 </label>
                 <label>
                   <span>Цвет</span>
-                  <input name="color" type="text" value="Black" required />
+                  <input name="color" type="text" value="чёрный" required />
                 </label>
+                <p class="form-hint form-span-2">
+                  Можно писать просто: чёрный, красный, белый… Синхронизация понимает Bambu-имена вроде Charcoal, Scarlet Red, Jade White.
+                </p>
                 <label>
                   <span>Производитель</span>
                   <input name="manufacturer" type="text" value="Bambu" required />
@@ -228,6 +231,7 @@
               <div class="form-header">
                 <h3>Синхронизация Bambu Cloud</h3>
               </div>
+              <p id="cloudAccountBadge" class="form-hint form-span-2">Аккаунт ещё не сохранён — войдите один раз.</p>
               <div class="form-grid">
                 <label>
                   <span>Регион Bambu</span>
@@ -238,19 +242,19 @@
                 </label>
                 <label>
                   <span>Email аккаунта Bambu</span>
-                  <input name="cloudEmail" type="email" placeholder="friend@email.com" autocomplete="username" required />
+                  <input name="cloudEmail" type="email" placeholder="friend@email.com" autocomplete="username" />
                 </label>
                 <label>
                   <span>Пароль</span>
-                  <input name="cloudPassword" type="password" placeholder="пароль Bambu Cloud" autocomplete="current-password" required />
+                  <input name="cloudPassword" type="password" placeholder="нужен только при первом входе" autocomplete="current-password" />
                 </label>
                 <label>
                   <span>Код из email (если попросит)</span>
                   <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
                 </label>
                 <p class="form-hint form-span-2">
-                  Подтянет все принтеры аккаунта (имя, serial, модель) и начнёт отслеживать печати.
-                  Серийник вводить не нужно.
+                  Один раз войдите — аккаунт сохранится. Дальше синхронизация идёт в фоне каждые 2 минуты без повторного ввода.
+                  Пластик из Cloud (материал/цвет) списывается со склада автоматически при совпадении.
                 </p>
               </div>
               <div class="form-actions">

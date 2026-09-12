@@ -77,3 +77,40 @@ func TestConfirmDraftReservesFilament(t *testing.T) {
 		t.Fatalf("spool weight = %d, want 880", updatedSpool.CurrentWeight)
 	}
 }
+
+func TestSyncFromBambuMatchesFilamentByMaterialAndColor(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	printerRepo := memory.NewPrinterRepository()
+	productRepo := memory.NewProductRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	service := NewService(jobRepo, spoolRepo, productRepo, printerRepo)
+
+	printer := printerdomain.NewPrinter("A1", "A1")
+	_ = printerRepo.Create(context.Background(), printer)
+	spool := spooldomain.NewSpool(spooldomain.MaterialPLA, "Чёрный", "Bambu", 1000, 30)
+	_ = spoolRepo.Create(context.Background(), spool)
+
+	job, created, err := service.SyncFromBambu(context.Background(), printer, BambuSnapshot{
+		ExternalTaskID:  "task-pla-black",
+		FileName:        "benchy.gcode",
+		Progress:        8,
+		Status:          printjobdomain.StatusPrinting,
+		MaterialHint:    "PLA",
+		ColorHint:       "Charcoal",
+		EstimatedWeight: 90,
+		RemainingMin:    60,
+	})
+	if err != nil {
+		t.Fatalf("SyncFromBambu: %v", err)
+	}
+	if !created || job.IsDraft {
+		t.Fatalf("expected auto-matched non-draft job, got draft=%v created=%v", job.IsDraft, created)
+	}
+	if job.SpoolID != spool.ID {
+		t.Fatalf("spool = %s, want %s", job.SpoolID, spool.ID)
+	}
+	updatedSpool, _ := spoolRepo.GetByID(context.Background(), spool.ID)
+	if updatedSpool.CurrentWeight >= 1000 {
+		t.Fatalf("expected filament reserved, weight=%d", updatedSpool.CurrentWeight)
+	}
+}

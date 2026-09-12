@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"filamenttracker/internal/domain"
+	"filamenttracker/internal/domain/filament"
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
 	productdomain "filamenttracker/internal/domain/product"
@@ -105,7 +106,7 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 		}
 		existing = job
 		created = true
-	} else if isTerminal(existing.Status) && (snap.Status == printjobdomain.StatusPrinting || snap.Status == printjobdomain.StatusPaused || snap.Status == printjobdomain.StatusDraft) {
+	} else if isTerminal(existing.Status) && (snap.Status == printjobdomain.StatusPrinting || snap.Status == printjobdomain.StatusPreparing || snap.Status == printjobdomain.StatusPaused || snap.Status == printjobdomain.StatusDraft) {
 		job, createErr := s.createFromBambu(ctx, printer, snap)
 		if createErr != nil {
 			return printjobdomain.PrintJob{}, false, createErr
@@ -130,10 +131,10 @@ func (s *Service) SyncFromBambu(ctx context.Context, printer printerdomain.Print
 
 	prevStatus := existing.Status
 	switch snap.Status {
-	case printjobdomain.StatusPrinting, printjobdomain.StatusPaused, printjobdomain.StatusQueued:
+	case printjobdomain.StatusPreparing, printjobdomain.StatusPrinting, printjobdomain.StatusPaused, printjobdomain.StatusQueued:
 		if existing.Status != snap.Status && !isTerminal(existing.Status) {
 			existing.Status = snap.Status
-			if existing.IsDraft && snap.Status == printjobdomain.StatusPrinting {
+			if existing.IsDraft && (snap.Status == printjobdomain.StatusPrinting || snap.Status == printjobdomain.StatusPreparing) {
 				existing.Status = printjobdomain.StatusDraft
 			}
 			changed = true
@@ -277,39 +278,128 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 			if nameKey != "" && (strings.Contains(fileKey, nameKey) || strings.Contains(nameKey, fileKey)) {
 				productID = product.ID
 				estimated = product.EstimatedWeight
-				draft = false
 				break
 			}
 		}
 	}
 
-	if printer.DefaultSpoolID != uuid.Nil {
-		if _, err := s.spoolRepo.GetByID(ctx, printer.DefaultSpoolID); err == nil {
-			spoolID = printer.DefaultSpoolID
-		}
-	}
-	if spoolID == uuid.Nil {
-		spools, err := s.spoolRepo.List(ctx)
-		if err == nil {
-			for _, spool := range spools {
-				if snap.MaterialHint != "" && !strings.EqualFold(string(spool.Material), snap.MaterialHint) {
+	materialHint := normalizeMaterial(snap.MaterialHint)
+	colorAliases := colorAliases(snap.ColorHint)
+
+	spools, err := s.spoolRepo.List(ctx)
+	if err == nil {
+		var bestID uuid.UUID
+		bestScore := -1
+		for _, spool := range spools {
+			if spool.CurrentWeight <= 0 {
+				continue
+			}
+			score := 0
+			if materialHint != "" && materialsMatch(string(spool.Material), materialHint) {
+				score += 2
+			} else if materialHint != "" {
+				continue
+			}
+			if len(colorAliases) > 0 {
+				if colorMatches(spool.Color, colorAliases) {
+					score += 2
+				} else {
 					continue
-				}
-				if snap.ColorHint != "" && !strings.Contains(strings.ToLower(spool.Color), strings.ToLower(snap.ColorHint)) {
-					continue
-				}
-				if spool.CurrentWeight > 0 {
-					spoolID = spool.ID
-					break
 				}
 			}
+			if printer.DefaultSpoolID != uuid.Nil && spool.ID == printer.DefaultSpoolID {
+				score += 1
+			}
+			if score > bestScore {
+				bestScore = score
+				bestID = spool.ID
+			}
+		}
+		if bestID != uuid.Nil && bestScore >= 2 {
+			spoolID = bestID
 		}
 	}
 
-	if productID == uuid.Nil || spoolID == uuid.Nil {
-		draft = true
+	if spoolID == uuid.Nil && printer.DefaultSpoolID != uuid.Nil {
+		if spool, err := s.spoolRepo.GetByID(ctx, printer.DefaultSpoolID); err == nil && spool.CurrentWeight > 0 {
+			spoolID = printer.DefaultSpoolID
+		}
+	}
+
+	// Auto-consume when warehouse spool matched by cloud material (+ color when present).
+	if spoolID != uuid.Nil && (materialHint != "" || productID != uuid.Nil) {
+		draft = false
+	}
+	if productID != uuid.Nil && spoolID != uuid.Nil {
+		draft = false
 	}
 	return productID, spoolID, estimated, draft
+}
+
+func normalizeMaterial(raw string) string {
+	raw = strings.ToUpper(strings.TrimSpace(raw))
+	raw = strings.ReplaceAll(raw, " ", "")
+	switch {
+	case strings.HasPrefix(raw, "PLA"):
+		return "PLA"
+	case strings.HasPrefix(raw, "PETG"):
+		return "PETG"
+	case strings.HasPrefix(raw, "ABS"):
+		return "ABS"
+	case strings.HasPrefix(raw, "ASA"):
+		return "ASA"
+	case strings.HasPrefix(raw, "TPU"):
+		return "TPU"
+	case strings.HasPrefix(raw, "PC"):
+		return "PC"
+	default:
+		return raw
+	}
+}
+
+func materialsMatch(spoolMaterial, hint string) bool {
+	return strings.EqualFold(normalizeMaterial(spoolMaterial), normalizeMaterial(hint))
+}
+
+func colorAliases(raw string) []string {
+	return filament.ExpandColorAliases(raw)
+}
+
+func colorMatches(spoolColor string, aliases []string) bool {
+	spoolColor = strings.ToLower(strings.TrimSpace(spoolColor))
+	spoolExpanded := filament.ExpandColorAliases(spoolColor)
+	for _, alias := range aliases {
+		alias = strings.ToLower(strings.TrimSpace(alias))
+		if alias == "" {
+			continue
+		}
+		if spoolColor == alias || strings.Contains(spoolColor, alias) || strings.Contains(alias, spoolColor) {
+			return true
+		}
+		for _, expanded := range spoolExpanded {
+			if strings.EqualFold(expanded, alias) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func uniqueStrings(in []string) []string {
+	seen := make(map[string]struct{}, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 func normalizeName(raw string) string {

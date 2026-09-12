@@ -9,13 +9,14 @@ import (
 type Status string
 
 const (
-	StatusQueued    Status = "queued"
-	StatusPrinting  Status = "printing"
-	StatusPaused    Status = "paused"
-	StatusCompleted Status = "completed"
-	StatusFailed    Status = "failed"
-	StatusCancelled Status = "cancelled"
-	StatusDraft     Status = "draft"
+	StatusQueued     Status = "queued"
+	StatusPreparing  Status = "preparing"
+	StatusPrinting   Status = "printing"
+	StatusPaused     Status = "paused"
+	StatusCompleted  Status = "completed"
+	StatusFailed     Status = "failed"
+	StatusCancelled  Status = "cancelled"
+	StatusDraft      Status = "draft"
 )
 
 type Source string

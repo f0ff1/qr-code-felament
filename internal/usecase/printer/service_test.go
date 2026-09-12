@@ -11,7 +11,7 @@ import (
 
 func TestServiceCreateAndGetByID(t *testing.T) {
 	repo := memory.NewPrinterRepository()
-	service := NewService(repo, mock.Adapter{})
+	service := NewService(repo, mock.Adapter{}, memory.NewCloudAccountRepository())
 
 	printer, err := service.Create(context.Background(), CreateInput{Name: "Bambu A1", Model: "A1"})
 	if err != nil {
@@ -32,7 +32,7 @@ func TestServiceCreateAndGetByID(t *testing.T) {
 
 func TestServiceSyncStatusUpdatesPrinter(t *testing.T) {
 	repo := memory.NewPrinterRepository()
-	service := NewService(repo, mock.Adapter{})
+	service := NewService(repo, mock.Adapter{}, memory.NewCloudAccountRepository())
 
 	printer, err := service.Create(context.Background(), CreateInput{Name: "Ender 3", Model: "Creality"})
 	if err != nil {
@@ -50,7 +50,7 @@ func TestServiceSyncStatusUpdatesPrinter(t *testing.T) {
 
 func TestServiceGetProgress(t *testing.T) {
 	repo := memory.NewPrinterRepository()
-	service := NewService(repo, mock.Adapter{})
+	service := NewService(repo, mock.Adapter{}, memory.NewCloudAccountRepository())
 
 	printer, err := service.Create(context.Background(), CreateInput{Name: "Prusa MK4", Model: "Prusa"})
 	if err != nil {
@@ -68,7 +68,7 @@ func TestServiceGetProgress(t *testing.T) {
 
 func TestServiceCreateRejectsEmptyInput(t *testing.T) {
 	repo := memory.NewPrinterRepository()
-	service := NewService(repo, mock.Adapter{})
+	service := NewService(repo, mock.Adapter{}, memory.NewCloudAccountRepository())
 
 	if _, err := service.Create(context.Background(), CreateInput{}); err == nil {
 		t.Fatal("Create() expected error for empty input")
@@ -77,7 +77,7 @@ func TestServiceCreateRejectsEmptyInput(t *testing.T) {
 
 func TestServiceCreateLANRequiresCredentials(t *testing.T) {
 	repo := memory.NewPrinterRepository()
-	service := NewService(repo, mock.Adapter{})
+	service := NewService(repo, mock.Adapter{}, memory.NewCloudAccountRepository())
 
 	if _, err := service.Create(context.Background(), CreateInput{Name: "A1", Model: "A1", LANEnabled: true}); err == nil {
 		t.Fatal("Create() expected error for incomplete LAN config")
@@ -93,7 +93,7 @@ func TestPrinterEntityDefaultStatusIsIdle(t *testing.T) {
 
 func TestServiceCreateCloudRequiresSerial(t *testing.T) {
 	repo := memory.NewPrinterRepository()
-	service := NewService(repo, mock.Adapter{})
+	service := NewService(repo, mock.Adapter{}, memory.NewCloudAccountRepository())
 
 	if _, err := service.Create(context.Background(), CreateInput{
 		Name: "A1", Model: "A1", CloudEnabled: true, CloudEmail: "a@b.c", CloudPassword: "x",

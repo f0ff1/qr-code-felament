@@ -38,6 +38,7 @@ const refs = {
   printerForm: document.getElementById('printerForm'),
   cloudSyncForm: document.getElementById('cloudSyncForm'),
   cloudSyncStatus: document.getElementById('cloudSyncStatus'),
+  cloudAccountBadge: document.getElementById('cloudAccountBadge'),
   productForm: document.getElementById('productForm'),
   jobForm: document.getElementById('jobForm'),
   spoolFormStatus: document.getElementById('spoolFormStatus'),
@@ -79,7 +80,7 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
 }
 
 function isActiveJobStatus(status) {
-  return ['printing', 'paused', 'queued', 'draft'].includes(String(status ?? '').toLowerCase());
+  return ['preparing', 'printing', 'paused', 'queued', 'draft'].includes(String(status ?? '').toLowerCase());
 }
 
 function getSpoolStatus(spool) {
@@ -285,14 +286,17 @@ function translateStatus(status) {
     available: 'достаточно',
     low: 'заканчивается',
     in_use: 'в работе',
+    preparing: 'подготовка',
     printing: 'печать',
+    paused: 'пауза',
+    completed: 'завершено',
     idle: 'простаивает',
+    offline: 'офлайн',
     queued: 'в очереди',
     success: 'успешно',
     warning: 'предупреждение',
     error: 'ошибка',
     info: 'инфо',
-    completed: 'завершено',
   };
 
   return map[status] || status;
@@ -401,11 +405,17 @@ function renderSummary() {
 }
 
 function getEffectivePrinterStatus(printerId) {
+  const printer = state.printers.find((item) => String(item.id) === String(printerId));
+  const apiStatus = String(printer?.status ?? '').toLowerCase();
+  if (apiStatus && !['idle', ''].includes(apiStatus)) {
+    return apiStatus;
+  }
   const hasActiveJob = state.jobs.some((job) => {
     if (String(job.printerId) !== String(printerId)) return false;
     return isActiveJobStatus(getEffectiveJobStatus(job));
   });
-  return hasActiveJob ? 'printing' : 'idle';
+  if (hasActiveJob) return 'printing';
+  return apiStatus || 'idle';
 }
 
 function renderOverview() {
@@ -953,12 +963,31 @@ async function syncBambuCloud(event) {
 
     const names = (result.devices || []).map((d) => d.name || d.serial).join(', ');
     notify(`Синхронизировано: ${result.count || 0} · ${names}`, 'success', 'Bambu Cloud');
+    form.cloudPassword.value = '';
     form.cloudVerifyCode.value = '';
+    await refreshCloudAccountBadge();
     await loadData();
   } catch (error) {
     notify(error.message || 'Не удалось синхронизировать Bambu Cloud', 'error', 'Bambu Cloud');
   } finally {
     setFormBusy(form, false);
+  }
+}
+
+async function refreshCloudAccountBadge() {
+  if (!refs.cloudAccountBadge) return;
+  try {
+    const account = await fetchJSON('/api/bambu/cloud/account');
+    if (account.linked) {
+      refs.cloudAccountBadge.textContent = `Сохранён аккаунт ${account.email || ''} · фоновая синхронизация активна`;
+      const form = refs.cloudSyncForm;
+      if (form?.cloudEmail && !form.cloudEmail.value) form.cloudEmail.value = account.email || '';
+      if (form?.cloudRegion && account.region) form.cloudRegion.value = account.region;
+    } else {
+      refs.cloudAccountBadge.textContent = 'Аккаунт ещё не сохранён — войдите один раз.';
+    }
+  } catch {
+    refs.cloudAccountBadge.textContent = 'Аккаунт ещё не сохранён — войдите один раз.';
   }
 }
 
@@ -1312,6 +1341,7 @@ function bindEvents() {
 function init() {
   bindEvents();
   connectEvents();
+  refreshCloudAccountBadge();
   notify('Система готова', 'success', 'Filament Tracker');
   loadData();
 }

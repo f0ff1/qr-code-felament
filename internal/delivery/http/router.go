@@ -202,11 +202,12 @@ func NewRouter() http.Handler {
 	runtime := bootstrap.NewRuntime()
 
 	var (
-		spoolRepo     spooldomain.Repository
-		printerRepo   printerusecase.Repository
-		productRepo   productusecase.ProductRepository
-		printJobRepo  printjobusecase.PrintJobRepository
-		inventoryRepo inventoryusecase.InventoryRepository
+		spoolRepo      spooldomain.Repository
+		printerRepo    printerusecase.Repository
+		productRepo    productusecase.ProductRepository
+		printJobRepo   printjobusecase.PrintJobRepository
+		inventoryRepo  inventoryusecase.InventoryRepository
+		cloudAccountRepo printerusecase.CloudAccountRepository
 	)
 
 	if runtime.DB != nil {
@@ -215,6 +216,7 @@ func NewRouter() http.Handler {
 		productRepo = postgresrepo.NewProductRepository(runtime.DB)
 		printJobRepo = postgresrepo.NewPrintJobRepository(runtime.DB)
 		inventoryRepo = postgresrepo.NewInventoryRepository(runtime.DB)
+		cloudAccountRepo = postgresrepo.NewCloudAccountRepository(runtime.DB)
 		log.Println("using postgres repositories")
 	} else {
 		spoolRepo = memory.NewRepository()
@@ -222,11 +224,12 @@ func NewRouter() http.Handler {
 		productRepo = memory.NewProductRepository()
 		printJobRepo = memory.NewPrintJobRepository()
 		inventoryRepo = memory.NewInventoryRepository()
+		cloudAccountRepo = memory.NewCloudAccountRepository()
 		log.Println("using in-memory repositories")
 	}
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, cloudAccountRepo)
 	productService := productusecase.NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 	inventoryService := inventoryusecase.NewService(spoolRepo, inventoryRepo)
@@ -249,6 +252,42 @@ func NewRouter() http.Handler {
 	notifier := notificationusecase.NewService()
 	bambuMonitor := bambu.NewMonitor(printerRepo, printJobService, notifyBridge{notifier})
 	bambuMonitor.Start(context.Background())
+
+	// Background: refresh printers from saved Bambu Cloud account without re-login.
+	go func() {
+		ticker := time.NewTicker(2 * time.Minute)
+		defer ticker.Stop()
+		for range ticker.C {
+			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+			if _, err := printerService.SyncSavedCloudAccount(ctx); err != nil {
+				if !strings.Contains(err.Error(), "not found") {
+					log.Printf("bambu cloud background sync: %v", err)
+				}
+			} else {
+				bambuMonitor.PollOnce(ctx)
+			}
+			cancel()
+		}
+	}()
+
+	mux.HandleFunc("/api/bambu/cloud/account", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		account, err := printerService.GetCloudAccount(context.Background())
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{"linked": false})
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"linked": account.Linked(),
+			"email":  account.Email,
+			"region": account.Region,
+		})
+	})
 
 	mux.HandleFunc("/api/bambu/cloud/sync", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

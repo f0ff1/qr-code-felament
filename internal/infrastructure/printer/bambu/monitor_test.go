@@ -14,6 +14,7 @@ func TestMapGcodeState(t *testing.T) {
 		active bool
 	}{
 		{"RUNNING", printjobdomain.StatusPrinting, true},
+		{"PREPARE", printjobdomain.StatusPreparing, true},
 		{"PAUSE", printjobdomain.StatusPaused, true},
 		{"FINISH", printjobdomain.StatusCompleted, true},
 		{"FAILED", printjobdomain.StatusFailed, true},
@@ -32,9 +33,9 @@ func TestMapCloudPrintStatus(t *testing.T) {
 	if status != printjobdomain.StatusPrinting || !active {
 		t.Fatalf("ACTIVE => %s/%v", status, active)
 	}
-	status, active = mapCloudPrintStatus("RUNNING")
-	if status != printjobdomain.StatusPrinting || !active {
-		t.Fatalf("RUNNING => %s/%v", status, active)
+	status, active = mapCloudPrintStatus("PREPARE")
+	if status != printjobdomain.StatusPreparing || !active {
+		t.Fatalf("PREPARE => %s/%v", status, active)
 	}
 	status, active = mapCloudPrintStatus("SUCCESS")
 	if status != printjobdomain.StatusCompleted || !active {

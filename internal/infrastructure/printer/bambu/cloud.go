@@ -271,7 +271,9 @@ func mapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
 // MapCloudPrintStatus maps Bambu Cloud device print_status values.
 func MapCloudPrintStatus(raw string) (printjobdomain.Status, bool) {
 	switch strings.ToUpper(strings.TrimSpace(raw)) {
-	case "ACTIVE", "RUNNING", "PRINTING", "PREPARE", "SLICING", "BUSY", "WORKING":
+	case "PREPARE", "PREPARING", "SLICING", "DOWNLOADING":
+		return printjobdomain.StatusPreparing, true
+	case "ACTIVE", "RUNNING", "PRINTING", "BUSY", "WORKING":
 		return printjobdomain.StatusPrinting, true
 	case "PAUSE", "PAUSED":
 		return printjobdomain.StatusPaused, true

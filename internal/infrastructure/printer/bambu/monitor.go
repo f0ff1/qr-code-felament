@@ -472,7 +472,9 @@ func trayHints(print struct {
 
 func mapGcodeState(raw string) (printjobdomain.Status, bool) {
 	switch bambulabs.GcodeState(strings.ToUpper(strings.TrimSpace(raw))) {
-	case bambulabs.RUNNING, bambulabs.PREPARE:
+	case bambulabs.PREPARE:
+		return printjobdomain.StatusPreparing, true
+	case bambulabs.RUNNING:
 		return printjobdomain.StatusPrinting, true
 	case bambulabs.PAUSE:
 		return printjobdomain.StatusPaused, true
@@ -487,15 +489,22 @@ func mapGcodeState(raw string) (printjobdomain.Status, bool) {
 
 func mapPrinterStatus(status printjobdomain.Status, active bool) printerdomain.PrinterStatus {
 	if !active {
+		if status == printjobdomain.StatusCompleted {
+			return printerdomain.StatusCompleted
+		}
 		return printerdomain.StatusIdle
 	}
 	switch status {
+	case printjobdomain.StatusPreparing:
+		return printerdomain.StatusPreparing
 	case printjobdomain.StatusPrinting, printjobdomain.StatusQueued, printjobdomain.StatusDraft:
 		return printerdomain.StatusPrinting
 	case printjobdomain.StatusPaused:
 		return printerdomain.StatusPaused
 	case printjobdomain.StatusFailed:
 		return printerdomain.StatusError
+	case printjobdomain.StatusCompleted:
+		return printerdomain.StatusCompleted
 	default:
 		return printerdomain.StatusIdle
 	}

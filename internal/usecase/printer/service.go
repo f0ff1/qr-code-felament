@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"filamenttracker/internal/domain"
+	cloudaccount "filamenttracker/internal/domain/cloudaccount"
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
 	"filamenttracker/internal/infrastructure/printer/bambu"
@@ -20,6 +21,11 @@ type Repository interface {
 	List(ctx context.Context) ([]printerdomain.Printer, error)
 	Update(ctx context.Context, p printerdomain.Printer) error
 	Delete(ctx context.Context, id uuid.UUID) error
+}
+
+type CloudAccountRepository interface {
+	Upsert(ctx context.Context, account cloudaccount.Account) error
+	GetLatest(ctx context.Context) (cloudaccount.Account, error)
 }
 
 type CreateInput struct {
@@ -40,11 +46,12 @@ type CreateInput struct {
 
 type Service struct {
 	repo    Repository
+	accounts CloudAccountRepository
 	adapter printerdomain.Adapter
 }
 
-func NewService(repo Repository, adapter printerdomain.Adapter) *Service {
-	return &Service{repo: repo, adapter: adapter}
+func NewService(repo Repository, adapter printerdomain.Adapter, accounts CloudAccountRepository) *Service {
+	return &Service{repo: repo, adapter: adapter, accounts: accounts}
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (printerdomain.Printer, error) {
@@ -135,6 +142,21 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 	email := strings.TrimSpace(input.Email)
 	password := strings.TrimSpace(input.Password)
 
+	if saved, err := s.loadSavedAccount(ctx); err == nil {
+		if email == "" {
+			email = saved.Email
+		}
+		if password == "" {
+			password = saved.Password
+		}
+		if token == "" && input.VerifyCode == "" {
+			token = saved.Token
+		}
+		if strings.TrimSpace(input.Region) == "" {
+			region = bambu.NormalizeCloudRegion(saved.Region)
+		}
+	}
+
 	if token == "" {
 		if strings.TrimSpace(input.VerifyCode) != "" {
 			verified, err := bambu.CloudVerify(email, input.VerifyCode, region)
@@ -159,10 +181,24 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 
 	devices, err := bambu.ListCloudDevices(token, region)
 	if err != nil {
-		return CloudSyncResult{}, fmt.Errorf("%w: list cloud devices: %v", domain.ErrInvalid, err)
+		// Token may be expired — retry with stored password once.
+		if password != "" && email != "" {
+			login, loginErr := bambu.CloudLogin(email, password, region)
+			if loginErr == nil && !login.NeedsVerify && login.Token != "" {
+				token = login.Token
+				devices, err = bambu.ListCloudDevices(token, region)
+			}
+		}
+		if err != nil {
+			return CloudSyncResult{}, fmt.Errorf("%w: list cloud devices: %v", domain.ErrInvalid, err)
+		}
 	}
 	if len(devices) == 0 {
 		return CloudSyncResult{Token: token, Devices: devices}, fmt.Errorf("%w: no printers bound to this Bambu account", domain.ErrNotFound)
+	}
+
+	if err := s.saveAccount(ctx, email, password, token, region); err != nil {
+		return CloudSyncResult{}, err
 	}
 
 	existing, err := s.repo.List(ctx)
@@ -237,6 +273,53 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 	}, nil
 }
 
+func (s *Service) SyncSavedCloudAccount(ctx context.Context) (CloudSyncResult, error) {
+	account, err := s.loadSavedAccount(ctx)
+	if err != nil {
+		return CloudSyncResult{}, err
+	}
+	return s.SyncFromCloud(ctx, CloudSyncInput{
+		Email:    account.Email,
+		Password: account.Password,
+		Token:    account.Token,
+		Region:   account.Region,
+	})
+}
+
+func (s *Service) GetCloudAccount(ctx context.Context) (cloudaccount.Account, error) {
+	return s.loadSavedAccount(ctx)
+}
+
+func (s *Service) loadSavedAccount(ctx context.Context) (cloudaccount.Account, error) {
+	if s.accounts == nil {
+		return cloudaccount.Account{}, fmt.Errorf("%w: cloud account store", domain.ErrNotFound)
+	}
+	return s.accounts.GetLatest(ctx)
+}
+
+func (s *Service) saveAccount(ctx context.Context, email, password, token, region string) error {
+	if s.accounts == nil {
+		return nil
+	}
+	account, err := s.accounts.GetLatest(ctx)
+	if err != nil {
+		account = cloudaccount.New(email, password, token, region)
+	} else {
+		if email != "" {
+			account.Email = email
+		}
+		if password != "" {
+			account.Password = password
+		}
+		if token != "" {
+			account.Token = token
+		}
+		account.Region = bambu.NormalizeCloudRegion(region)
+		account.UpdatedAt = time.Now()
+	}
+	return s.accounts.Upsert(ctx, account)
+}
+
 func cloudDevicePrinterStatus(device bambu.CloudDevice) printerdomain.PrinterStatus {
 	if !device.Online {
 		return printerdomain.StatusOffline
@@ -246,10 +329,14 @@ func cloudDevicePrinterStatus(device bambu.CloudDevice) printerdomain.PrinterSta
 		return printerdomain.StatusIdle
 	}
 	switch status {
+	case printjobdomain.StatusPreparing:
+		return printerdomain.StatusPreparing
 	case printjobdomain.StatusPaused:
 		return printerdomain.StatusPaused
 	case printjobdomain.StatusFailed:
 		return printerdomain.StatusError
+	case printjobdomain.StatusCompleted:
+		return printerdomain.StatusCompleted
 	default:
 		return printerdomain.StatusPrinting
 	}

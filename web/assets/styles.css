@@ -1076,14 +1076,34 @@ h1 {
   color: var(--blue);
 }
 
+.printer-tag.preparing {
+  background: rgba(210, 153, 34, 0.16);
+  color: var(--yellow);
+}
+
 .printer-tag.printing {
   background: rgba(63, 185, 80, 0.12);
+  color: var(--green);
+}
+
+.printer-tag.paused {
+  background: rgba(163, 113, 247, 0.16);
+  color: #a371f7;
+}
+
+.printer-tag.completed {
+  background: rgba(63, 185, 80, 0.2);
   color: var(--green);
 }
 
 .printer-tag.offline {
   background: rgba(248, 81, 73, 0.12);
   color: #ffb3ad;
+}
+
+.printer-tag.error {
+  background: rgba(248, 81, 73, 0.18);
+  color: #ff7b72;
 }
 
 .job-item {

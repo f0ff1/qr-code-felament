@@ -43,7 +43,7 @@ func TestPrintJobCanStartWhenFilamentIsEnough(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -76,7 +76,7 @@ func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -105,7 +105,7 @@ func TestPrintJobStartConsumesFilament(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -146,7 +146,7 @@ func TestPrintJobPauseAndResume(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 
@@ -198,7 +198,7 @@ func TestDeleteUnfinishedJobRestoresFilament(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 
 	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{})
+	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, memory.NewCloudAccountRepository())
 	productService := NewService(productRepo)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 

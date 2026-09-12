@@ -10,18 +10,20 @@ import (
 type PrinterStatus string
 
 const (
-	StatusIdle     PrinterStatus = "idle"
-	StatusPrinting PrinterStatus = "printing"
-	StatusPaused   PrinterStatus = "paused"
-	StatusOffline  PrinterStatus = "offline"
-	StatusError    PrinterStatus = "error"
+	StatusIdle       PrinterStatus = "idle"
+	StatusPreparing  PrinterStatus = "preparing"
+	StatusPrinting   PrinterStatus = "printing"
+	StatusPaused     PrinterStatus = "paused"
+	StatusCompleted  PrinterStatus = "completed"
+	StatusOffline    PrinterStatus = "offline"
+	StatusError      PrinterStatus = "error"
 )
 
 type ConnectionMode string
 
 const (
-	ConnectionNone ConnectionMode = ""
-	ConnectionLAN  ConnectionMode = "lan"
+	ConnectionNone  ConnectionMode = ""
+	ConnectionLAN   ConnectionMode = "lan"
 	ConnectionCloud ConnectionMode = "cloud"
 )
 
