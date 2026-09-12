@@ -25,6 +25,7 @@ import (
 	printerusecase "filamenttracker/internal/usecase/printer"
 	printjobusecase "filamenttracker/internal/usecase/printjob"
 	productusecase "filamenttracker/internal/usecase/product"
+runtimeusecase "filamenttracker/internal/usecase/runtime"
 	spoolusecase "filamenttracker/internal/usecase/spool"
 
 	"github.com/google/uuid"
@@ -166,6 +167,12 @@ func NewRouter() http.Handler {
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 	inventoryService := inventoryusecase.NewService(spoolRepo, inventoryRepo)
 	forecastService := predictionusecase.NewEstimator()
+runtimeSynchronizer := runtimeusecase.NewSynchronizer(spoolRepo, printerRepo, printJobRepo, productRepo, runtime.Redis)
+syncRuntime := func(ctx context.Context) {
+	if err := runtimeSynchronizer.Sync(ctx); err != nil {
+		log.Printf("sync runtime state: %v", err)
+	}
+}
 	notifier := notificationusecase.NewService()
 	ensureDemoData(context.Background(), spoolService, printerService, productService, printJobService)
 
@@ -414,6 +421,7 @@ func NewRouter() http.Handler {
 					"status":     string(job.Status),
 					"progress":   job.Progress,
 					"started_at": job.StartedAt.Format(time.RFC3339),
+					"finished_at": job.FinishedAt,
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -714,7 +722,15 @@ func NewRouter() http.Handler {
 		}
 		_, _ = w.Write(content)
 	})
-	return mux
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			syncRuntime(r.Context())
+		}
+		mux.ServeHTTP(w, r)
+		if strings.HasPrefix(r.URL.Path, "/api/") {
+			syncRuntime(r.Context())
+		}
+	})
 }
 
 func ensureDemoData(ctx context.Context, spoolService *spoolusecase.Service, printerService *printerusecase.Service, productService *productusecase.Service, printJobService *printjobusecase.Service) {

@@ -71,9 +71,7 @@ func (s *Service) Subscribe() chan Event {
 func (s *Service) Unsubscribe(ch chan Event) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, ok := s.subs[ch]; ok {
-		delete(s.subs, ch)
-	}
+	delete(s.subs, ch)
 	func() {
 		defer func() { recover() }()
 		close(ch)
