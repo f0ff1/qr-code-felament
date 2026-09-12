@@ -19,6 +19,7 @@ type Status string
 
 const (
 	StatusAvailable Status = "available"
+	StatusLow       Status = "low"
 	StatusInUse     Status = "in_use"
 	StatusEmpty     Status = "empty"
 )
@@ -59,6 +60,19 @@ func GenerateQRToken() string {
 
 func GenerateQRPNG(token string) ([]byte, error) {
 	return qrcode.Encode(token, qrcode.Medium, 256)
+}
+
+func (s *Spool) EffectiveStatus(inUse bool) Status {
+	if inUse {
+		return StatusInUse
+	}
+	if s.CurrentWeight <= 0 {
+		return StatusEmpty
+	}
+	if s.CurrentWeight < 200 {
+		return StatusLow
+	}
+	return StatusAvailable
 }
 
 func (s *Spool) Consume(weight int) {

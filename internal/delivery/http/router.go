@@ -48,6 +48,16 @@ func publicBaseURL(r *http.Request) string {
 }
 
 func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string {
+	statusLabel := "достаточно"
+	switch {
+	case spoolEntity.Status == spooldomain.StatusInUse:
+		statusLabel = "в работе"
+	case spoolEntity.CurrentWeight <= 0:
+		statusLabel = "закончился"
+	case spoolEntity.CurrentWeight < 200:
+		statusLabel = "заканчивается"
+	}
+
 	return fmt.Sprintf(`<!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -59,6 +69,8 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string
     .card { max-width: 720px; margin: 0 auto; background: #161b22; border: 1px solid #30363d; border-radius: 18px; padding: 24px; }
     .label { display: inline-block; font-size: 12px; letter-spacing: .08em; color: #8b949e; text-transform: uppercase; margin-bottom: 8px; }
     h1 { margin: 0 0 12px; font-size: 32px; }
+    .header { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+    .home-btn { display: inline-flex; align-items: center; justify-content: center; padding: 10px 16px; border-radius: 10px; background: rgba(88, 166, 255, 0.12); color: #dbeafe; border: 1px solid rgba(88, 166, 255, 0.3); text-decoration: none; font-weight: 700; }
     .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-top: 20px; }
     .item { background: #0d1117; border: 1px solid #30363d; border-radius: 12px; padding: 14px; }
     .item strong { display: block; font-size: 12px; color: #8b949e; margin-bottom: 6px; }
@@ -70,13 +82,16 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string
 </head>
 <body>
   <div class="card">
-    <div class="label">Public spool</div>
+    <div class="header">
+      <div class="label">Public spool</div>
+      <a class="home-btn" href="/">На главную</a>
+    </div>
     <h1>%s %s</h1>
     <div class="badge">%s</div>
     <div class="grid">
       <div class="item"><strong>Производитель</strong><span>%s</span></div>
-      <div class="item"><strong>Остаток</strong><span>%d г</span></div>
-      <div class="item"><strong>Начальный вес</strong><span>%d г</span></div>
+      <div class="item"><strong>Остаток на данный момент</strong><span>%d г</span></div>
+      <div class="item"><strong>Остаток в базе</strong><span>%d г</span></div>
       <div class="item"><strong>QR token</strong><span class="muted">%s</span></div>
     </div>
     <div class="qr">
@@ -88,7 +103,7 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, baseURL string) string
 		spoolEntity.Material,
 		spoolEntity.Material,
 		spoolEntity.Color,
-		spoolEntity.Status,
+		statusLabel,
 		spoolEntity.Manufacturer,
 		spoolEntity.CurrentWeight,
 		spoolEntity.InitialWeight,
@@ -190,12 +205,37 @@ func NewRouter() http.Handler {
 		}
 	})
 	mux.HandleFunc("/api/spools/", func(w http.ResponseWriter, r *http.Request) {
+		path := strings.TrimPrefix(r.URL.Path, "/api/spools/")
+		if strings.HasSuffix(path, "/weight") {
+			if r.Method != http.MethodPatch {
+				http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+				return
+			}
+			idString := strings.TrimSuffix(path, "/weight")
+			id, err := uuid.Parse(idString)
+			if err != nil {
+				http.Error(w, "invalid spool id", http.StatusBadRequest)
+				return
+			}
+			var input struct {
+				RemainingWeight int `json:"remainingWeight"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+				http.Error(w, "invalid payload", http.StatusBadRequest)
+				return
+			}
+			if err := spoolService.UpdateRemaining(context.Background(), id, input.RemainingWeight); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
 		if r.Method != http.MethodDelete {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
-		idString := strings.TrimPrefix(r.URL.Path, "/api/spools/")
-		id, err := uuid.Parse(idString)
+		id, err := uuid.Parse(path)
 		if err != nil {
 			http.Error(w, "invalid spool id", http.StatusBadRequest)
 			return

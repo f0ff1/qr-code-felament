@@ -61,6 +61,45 @@ func TestSchedulerScanPublishesPrintCompletedNotification(t *testing.T) {
 	}
 }
 
+func TestSchedulerSyncRuntimeStateRefreshesActiveStatus(t *testing.T) {
+	spoolRepo := memory.NewRepository()
+	jobRepo := memory.NewPrintJobRepository()
+	notifier := notificationusecase.NewService()
+
+	spoolEntity := spooldomain.NewSpool(spooldomain.MaterialPLA, "Black", "eSUN", 500, 30)
+	spoolEntity.CurrentWeight = 300
+	if err := spoolRepo.Create(context.Background(), spoolEntity); err != nil {
+		t.Fatalf("Create spool error = %v", err)
+	}
+
+	job := printjobdomain.NewPrintJob(uuid.New(), uuid.New(), spoolEntity.ID, 200)
+	job.Status = printjobdomain.StatusPrinting
+	job.Progress = 35
+	job.StartedAt = time.Now().Add(-2 * time.Minute)
+	if err := jobRepo.Create(context.Background(), job); err != nil {
+		t.Fatalf("Create print job error = %v", err)
+	}
+
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler.syncRuntimeState(context.Background())
+
+	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
+	if err != nil {
+		t.Fatalf("GetByID spool error = %v", err)
+	}
+	if updatedSpool.Status != spooldomain.StatusInUse {
+		t.Fatalf("updatedSpool.Status = %s, want %s", updatedSpool.Status, spooldomain.StatusInUse)
+	}
+
+	updatedJob, err := jobRepo.GetByID(context.Background(), job.ID)
+	if err != nil {
+		t.Fatalf("GetByID job error = %v", err)
+	}
+	if updatedJob.Status != printjobdomain.StatusPrinting {
+		t.Fatalf("updatedJob.Status = %s, want %s", updatedJob.Status, printjobdomain.StatusPrinting)
+	}
+}
+
 func TestSchedulerRunUsesTicker(t *testing.T) {
 	scheduler := NewSchedulerWithDeps(nil, nil, notificationusecase.NewService())
 	scheduler.tick = 10 * time.Millisecond

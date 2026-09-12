@@ -916,6 +916,20 @@ h1 {
   font-size: 11px;
 }
 
+.mini-btn.edit-weight {
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-color: rgba(148, 163, 184, 0.32);
+  background: rgba(148, 163, 184, 0.08);
+  color: #cbd5e1;
+  font-size: 13px;
+  line-height: 1;
+}
+
 .mini-btn.delete {
   width: 28px;
   height: 28px;

@@ -76,10 +76,13 @@ function getSpoolStatus(spool) {
   const remaining = Number(spool.remaining_weight ?? spool.remaining ?? 0);
   const initial = Number(spool.initial_weight ?? spool.initial ?? 0);
   const base = String(spool.status ?? 'available').toLowerCase();
+  const activeJobs = Array.isArray(state.jobs)
+    ? state.jobs.filter((job) => String(job.spoolId) === String(spool.id) && ['printing', 'paused', 'queued'].includes(String(job.status ?? '').toLowerCase()))
+    : [];
 
+  if (base === 'in_use' || activeJobs.length > 0) return 'in_use';
   if (remaining <= 0 || base === 'empty') return 'empty';
-  if (remaining <= Math.max(50, initial * 0.2)) return 'low';
-  if (base === 'in_use') return 'in_use';
+  if (remaining < 200 || remaining <= Math.max(50, initial * 0.2)) return 'low';
   return 'available';
 }
 
@@ -132,6 +135,7 @@ function normalizeJob(job) {
     status: String(job.status ?? 'queued').toLowerCase(),
     progress: Number(job.progress ?? 0),
     printer: job.printer_id ? String(job.printer_id).slice(0, 8) : '—',
+    printerId: job.printer_id ?? null,
     product: job.product_id ? String(job.product_id).slice(0, 8) : '—',
     productId: job.product_id ?? null,
     spoolId: job.spool_id ?? null,
@@ -222,8 +226,8 @@ function updateClock() {
 
 function translateStatus(status) {
   const map = {
-    available: 'доступно',
-    low: 'мало',
+    available: 'достаточно',
+    low: 'заканчивается',
     in_use: 'в работе',
     printing: 'печать',
     idle: 'простаивает',
@@ -307,7 +311,7 @@ function renderSummary() {
 }
 
 function getEffectivePrinterStatus(printerId) {
-  const hasActiveJob = state.jobs.some((job) => String(job.printerId) === String(printerId) && ['printing', 'paused'].includes(job.status));
+  const hasActiveJob = state.jobs.some((job) => String(job.printerId) === String(printerId) && ['printing', 'paused', 'queued'].includes(String(job.status ?? '').toLowerCase()));
   return hasActiveJob ? 'printing' : 'idle';
 }
 
@@ -449,6 +453,7 @@ function renderSpools() {
           <td>
             <div class="weight-metric">
               <span class="text">${Math.round(currentDisplay)}g</span>
+              <button class="mini-btn edit-weight" data-edit-spool-id="${spool.id}" data-current-weight="${Math.round(Number(spool.remaining ?? 0))}" aria-label="Изменить остаток" title="Изменить остаток">✎</button>
               <div class="percent-track"><span style="width:${Math.max(0, Math.min(100, bar.percent))}%; background:${bar.color};"></span></div>
             </div>
           </td>
@@ -930,6 +935,35 @@ function bindEvents() {
   });
 
   document.addEventListener('click', async (event) => {
+    const editWeightButton = event.target.closest('[data-edit-spool-id]');
+    if (editWeightButton) {
+      const id = editWeightButton.dataset.editSpoolId;
+      const current = Number(editWeightButton.dataset.currentWeight ?? 0);
+      const next = window.prompt('Введите новый остаток в граммах', String(current));
+      if (next === null) return;
+      const parsed = Number(next);
+      if (!Number.isFinite(parsed) || parsed < 0) {
+        appendActivity('Остаток не может быть отрицательным', 'error');
+        return;
+      }
+
+      try {
+        const response = await fetch(`/api/spools/${id}/weight`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ remainingWeight: Math.round(parsed) }),
+        });
+        if (!response.ok) {
+          throw new Error('Не удалось обновить остаток');
+        }
+        appendActivity(`Остаток обновлён: ${Math.round(parsed)} г`, 'success');
+        await loadData();
+      } catch (error) {
+        appendActivity(error.message || 'Ошибка обновления остатка', 'error');
+      }
+      return;
+    }
+
     const deleteButton = event.target.closest('[data-delete-type]');
     if (deleteButton) {
       await deleteItem(deleteButton.dataset.deleteType, deleteButton.dataset.deleteId);

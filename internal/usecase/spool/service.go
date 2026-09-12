@@ -3,6 +3,7 @@ package spool
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"filamenttracker/internal/domain"
 	spooldomain "filamenttracker/internal/domain/spool"
@@ -63,6 +64,26 @@ func (s *Service) List(ctx context.Context) ([]spooldomain.Spool, error) {
 
 func (s *Service) Delete(ctx context.Context, id uuid.UUID) error {
 	return s.repo.Delete(ctx, id)
+}
+
+func (s *Service) UpdateRemaining(ctx context.Context, id uuid.UUID, remainingWeight int) error {
+	entity, err := s.repo.GetByID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if remainingWeight < 0 {
+		return fmt.Errorf("%w: remaining weight cannot be negative", domain.ErrInvalid)
+	}
+	entity.CurrentWeight = remainingWeight
+	entity.UpdatedAt = time.Now()
+	if remainingWeight <= 0 {
+		entity.Status = spooldomain.StatusEmpty
+	} else if remainingWeight < 200 {
+		entity.Status = spooldomain.StatusLow
+	} else {
+		entity.Status = spooldomain.StatusAvailable
+	}
+	return s.repo.Update(ctx, entity)
 }
 
 func (s *Service) Consume(ctx context.Context, id uuid.UUID, weight int) error {
