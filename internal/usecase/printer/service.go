@@ -191,6 +191,8 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 				return CloudSyncResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 			}
 			if login.NeedsVerify {
+				// Keep credentials for the verify step; no token yet.
+				_ = s.saveAccount(ctx, email, password, "", region)
 				return CloudSyncResult{NeedsVerify: true}, nil
 			}
 			token = login.Token
@@ -317,13 +319,11 @@ func (s *Service) GetCloudAccount(ctx context.Context) (cloudaccount.Account, er
 	if err != nil {
 		return cloudaccount.Account{}, err
 	}
-	// Keep Linked() true for API: email present means a saved session exists.
-	// Strip raw secrets before returning to HTTP layer.
 	out := account
 	out.Password = ""
 	out.Token = ""
-	if account.Linked() || strings.TrimSpace(account.Email) != "" {
-		// Sentinel so Account.Linked() stays true without leaking secrets.
+	if account.Linked() {
+		// Sentinel so Account.Linked() stays true without leaking the real token.
 		out.Token = "linked"
 	}
 	return out, nil

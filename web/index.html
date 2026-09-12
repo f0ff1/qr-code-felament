@@ -266,11 +266,12 @@
                   <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
                 </label>
                 <p class="form-hint form-span-2">
-                  У Bambu Lab нет публичного OAuth «Войти через Bambu» для сторонних сайтов — вход идёт через их login API
-                  (email/пароль + код). После входа токен и пароль хранятся у нас в БД в зашифрованном виде до нажатия «Выйти».
+                  После «Войти» Bambu пришлёт код на почту. Введите его и нажмите «Войти» ещё раз.
+                  Если письма нет — проверьте «Спам» и «Отправить код ещё раз».
                 </p>
                 <div class="form-actions form-span-2">
                   <button type="submit" class="primary-btn">Войти в Bambu Lab</button>
+                  <button type="button" id="cloudResendCodeBtn" class="mini-btn">Отправить код ещё раз</button>
                 </div>
               </div>
               <div id="cloudSyncStatus" class="form-status"></div>

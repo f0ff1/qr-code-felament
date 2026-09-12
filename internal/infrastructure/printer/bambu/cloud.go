@@ -45,47 +45,6 @@ type CloudDevice struct {
 	AccessCode  string
 }
 
-func CloudLogin(email, password, region string) (CloudLoginResult, error) {
-	email = strings.TrimSpace(email)
-	password = strings.TrimSpace(password)
-	if email == "" || password == "" {
-		return CloudLoginResult{}, fmt.Errorf("cloud email and password are required")
-	}
-	client := bambicloud.NewClient(&bambicloud.Config{
-		Region:   MapCloudRegion(region),
-		Email:    email,
-		Password: password,
-	})
-	token, err := client.Login()
-	if err != nil {
-		return CloudLoginResult{}, err
-	}
-	if token == "" {
-		return CloudLoginResult{NeedsVerify: true}, nil
-	}
-	return CloudLoginResult{Token: token}, nil
-}
-
-func CloudVerify(email, code, region string) (string, error) {
-	email = strings.TrimSpace(email)
-	code = strings.TrimSpace(code)
-	if email == "" || code == "" {
-		return "", fmt.Errorf("cloud email and verification code are required")
-	}
-	client := bambicloud.NewClient(&bambicloud.Config{
-		Region: MapCloudRegion(region),
-		Email:  email,
-	})
-	token, err := client.SubmitVerificationCode(code)
-	if err != nil {
-		return "", err
-	}
-	if token == "" {
-		return "", fmt.Errorf("empty cloud token after verification")
-	}
-	return token, nil
-}
-
 func ListCloudDevices(token, region string) ([]CloudDevice, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {

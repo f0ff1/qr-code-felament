@@ -43,6 +43,7 @@ const refs = {
   cloudSignedInPanel: document.getElementById('cloudSignedInPanel'),
   cloudSyncOnlyBtn: document.getElementById('cloudSyncOnlyBtn'),
   cloudLogoutBtn: document.getElementById('cloudLogoutBtn'),
+  cloudResendCodeBtn: document.getElementById('cloudResendCodeBtn'),
   productForm: document.getElementById('productForm'),
   jobForm: document.getElementById('jobForm'),
   spoolFormStatus: document.getElementById('spoolFormStatus'),
@@ -1066,6 +1067,29 @@ async function syncBambuCloudSaved() {
   }
 }
 
+async function resendBambuCode() {
+  const form = refs.cloudSyncForm;
+  const btn = refs.cloudResendCodeBtn;
+  if (btn?.dataset.busy === 'true') return;
+  if (btn) btn.dataset.busy = 'true';
+  try {
+    const result = await fetchJSON('/api/bambu/cloud/resend-code', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        email: form?.cloudEmail?.value || '',
+        region: form?.cloudRegion?.value || 'us',
+      }),
+    });
+    notify(result.message || 'Код отправлен на email', 'success', 'Bambu Lab');
+    form?.cloudVerifyCode?.focus();
+  } catch (error) {
+    notify(error.message || 'Не удалось отправить код', 'error', 'Bambu Lab');
+  } finally {
+    if (btn) btn.dataset.busy = 'false';
+  }
+}
+
 async function logoutBambuCloud() {
   const btn = refs.cloudLogoutBtn;
   if (btn?.dataset.busy === 'true') return;
@@ -1458,6 +1482,7 @@ function bindEvents() {
   refs.cloudSyncForm?.addEventListener('submit', syncBambuCloud);
   refs.cloudSyncOnlyBtn?.addEventListener('click', syncBambuCloudSaved);
   refs.cloudLogoutBtn?.addEventListener('click', logoutBambuCloud);
+  refs.cloudResendCodeBtn?.addEventListener('click', resendBambuCode);
   refs.printerForm.addEventListener('submit', createPrinter);
   refs.printerForm?.connectionMode?.addEventListener('change', syncPrinterConnectionFields);
   syncPrinterConnectionFields();

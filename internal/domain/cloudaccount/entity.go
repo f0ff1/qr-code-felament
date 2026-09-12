@@ -31,5 +31,5 @@ func New(email, password, token, region string) Account {
 }
 
 func (a Account) Linked() bool {
-	return strings.TrimSpace(a.Token) != "" || (strings.TrimSpace(a.Email) != "" && strings.TrimSpace(a.Password) != "")
+	return strings.TrimSpace(a.Token) != ""
 }

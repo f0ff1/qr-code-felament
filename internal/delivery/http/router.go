@@ -315,6 +315,46 @@ func NewRouter() http.Handler {
 		}
 	})
 
+	mux.HandleFunc("/api/bambu/cloud/resend-code", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		var input struct {
+			Email  string `json:"email"`
+			Region string `json:"region"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			jsonError(w, "invalid payload", http.StatusBadRequest)
+			return
+		}
+		email := strings.TrimSpace(input.Email)
+		region := input.Region
+		if email == "" || region == "" {
+			if account, err := printerService.GetCloudAccount(context.Background()); err == nil {
+				if email == "" {
+					email = account.Email
+				}
+				if region == "" {
+					region = account.Region
+				}
+			}
+		}
+		if email == "" {
+			jsonError(w, "email is required", http.StatusBadRequest)
+			return
+		}
+		if err := bambu.CloudSendEmailCode(email, region); err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"ok":      true,
+			"message": "Код повторно отправлен на " + email,
+		})
+	})
+
 	mux.HandleFunc("/api/bambu/cloud/sync", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -346,7 +386,7 @@ func NewRouter() http.Handler {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"needs_verification": true,
-				"message":            "Bambu отправил код на email. Введите код и синхронизируйте снова.",
+				"message":            "Код отправлен на email. Введите 6-значный код и нажмите «Войти» снова.",
 			})
 			return
 		}
