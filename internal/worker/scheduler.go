@@ -43,12 +43,15 @@ func NewScheduler() *Scheduler {
 	}
 }
 
-func NewSchedulerWithDeps(spoolRepo spoolRepository, jobRepo printJobRepository, notifier notifier) *Scheduler {
+func NewSchedulerWithDeps(spoolRepo spoolRepository, jobRepo printJobRepository, notifier notifier, tick time.Duration) *Scheduler {
+	if tick <= 0 {
+		tick = 10 * time.Second
+	}
 	return &Scheduler{
 		spoolRepo:    spoolRepo,
 		jobRepo:      jobRepo,
 		notifier:     notifier,
-		tick:         10 * time.Second,
+		tick:         tick,
 		lowAlerted:   make(map[string]bool),
 		emptyAlerted: make(map[string]bool),
 	}
@@ -121,7 +124,7 @@ func (s *Scheduler) syncRuntimeState(ctx context.Context) {
 				switch {
 				case spool.CurrentWeight <= 0:
 					nextStatus = spooldomain.StatusEmpty
-				case spool.CurrentWeight < 200:
+				case spool.CurrentWeight < spooldomain.LowWeightGrams:
 					nextStatus = spooldomain.StatusLow
 				default:
 					nextStatus = spooldomain.StatusAvailable
@@ -156,7 +159,7 @@ func (s *Scheduler) notifySpoolStatusChange(spool spooldomain.Spool, prev, next 
 	case spooldomain.StatusEmpty:
 		s.publishSpoolEmpty(spool, label)
 	case spooldomain.StatusAvailable, spooldomain.StatusInUse:
-		if spool.CurrentWeight >= 200 {
+		if spool.CurrentWeight >= spooldomain.LowWeightGrams {
 			delete(s.lowAlerted, spool.ID.String())
 		}
 		if spool.CurrentWeight > 0 {
@@ -202,7 +205,7 @@ func (s *Scheduler) checkSpoolWeightAlerts(spool spooldomain.Spool) {
 	switch {
 	case spool.CurrentWeight <= 0:
 		s.publishSpoolEmpty(spool, label)
-	case spool.CurrentWeight < 200:
+	case spool.CurrentWeight < spooldomain.LowWeightGrams:
 		s.publishSpoolLow(spool, label)
 	default:
 		delete(s.lowAlerted, id)

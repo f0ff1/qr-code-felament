@@ -58,6 +58,9 @@ func GenerateQRToken() string {
 	return uuid.NewString()[:8]
 }
 
+// LowWeightGrams is the threshold for StatusLow. Set once from config at process start.
+var LowWeightGrams = 200
+
 func GenerateQRPNG(token string) ([]byte, error) {
 	return qrcode.Encode(token, qrcode.Medium, 256)
 }
@@ -69,7 +72,11 @@ func (s *Spool) EffectiveStatus(inUse bool) Status {
 	if s.CurrentWeight <= 0 {
 		return StatusEmpty
 	}
-	if s.CurrentWeight < 200 {
+	threshold := LowWeightGrams
+	if threshold < 0 {
+		threshold = 200
+	}
+	if s.CurrentWeight < threshold {
 		return StatusLow
 	}
 	return StatusAvailable

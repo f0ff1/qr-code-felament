@@ -24,7 +24,7 @@ func TestSchedulerScanPublishesLowSpoolNotification(t *testing.T) {
 		t.Fatalf("Create spool error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, nil, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, nil, notifier, 0)
 	scheduler.Scan(context.Background())
 
 	events := notifier.List()
@@ -53,7 +53,7 @@ func TestSchedulerScanDoesNotSpamCompletedPrints(t *testing.T) {
 		t.Fatalf("Create print job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(nil, printJobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(nil, printJobRepo, notifier, 0)
 	scheduler.Scan(context.Background())
 
 	if got := len(notifier.List()); got != 0 {
@@ -80,7 +80,7 @@ func TestSchedulerSyncRuntimeStateRefreshesActiveStatus(t *testing.T) {
 		t.Fatalf("Create print job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -118,7 +118,7 @@ func TestSchedulerSyncRuntimeStateMarksSpoolInUseWhileJobIsActive(t *testing.T) 
 		t.Fatalf("Create print job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -150,7 +150,7 @@ func TestSchedulerSyncRuntimeStateResetsStatusAfterPrintFinished(t *testing.T) {
 		t.Fatalf("Create completed job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -182,7 +182,7 @@ func TestSchedulerSyncRuntimeStateMarksLowAfterFinishedPrint(t *testing.T) {
 		t.Fatalf("Create completed job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -195,7 +195,7 @@ func TestSchedulerSyncRuntimeStateMarksLowAfterFinishedPrint(t *testing.T) {
 }
 
 func TestSchedulerRunUsesTicker(t *testing.T) {
-	scheduler := NewSchedulerWithDeps(nil, nil, notificationusecase.NewService())
+	scheduler := NewSchedulerWithDeps(nil, nil, notificationusecase.NewService(), 0)
 	scheduler.tick = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

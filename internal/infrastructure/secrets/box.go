@@ -8,8 +8,9 @@ import (
 	"encoding/base64"
 	"fmt"
 	"io"
-	"os"
 	"strings"
+
+	"filamenttracker/internal/config"
 )
 
 const prefix = "enc:v1:"
@@ -19,21 +20,28 @@ type Box struct {
 	key []byte
 }
 
-// NewBoxFromEnv builds a box from BAMBU_SECRETS_KEY or APP_SECRET.
-// If neither is set, derives a key from DATABASE_URL (stable per deploy) or a warning fallback.
+// NewBoxFromSettings builds a box from configured key material.
+// In production Validate() must ensure a strong key exists.
+// In development a dedicated weak-dev key is used only when unset (never DATABASE_URL).
+func NewBoxFromSettings(cfg config.Settings) (*Box, error) {
+	raw := strings.TrimSpace(cfg.BambuSecretsKey)
+	if raw == "" {
+		if cfg.IsProduction() {
+			return nil, fmt.Errorf("BAMBU_SECRETS_KEY is required")
+		}
+		raw = "filament-tracker-local-dev-only-not-for-prod"
+	}
+	return NewBox(raw), nil
+}
+
+// NewBoxFromEnv loads config and builds a box (legacy helper for call sites).
 func NewBoxFromEnv() *Box {
-	raw := strings.TrimSpace(os.Getenv("BAMBU_SECRETS_KEY"))
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("APP_SECRET"))
+	cfg := config.Load()
+	box, err := NewBoxFromSettings(cfg)
+	if err != nil {
+		panic(err)
 	}
-	if raw == "" {
-		raw = strings.TrimSpace(os.Getenv("DATABASE_URL"))
-	}
-	if raw == "" {
-		raw = "filament-tracker-dev-secret-change-me"
-	}
-	sum := sha256.Sum256([]byte(raw))
-	return &Box{key: sum[:]}
+	return box
 }
 
 func NewBox(keyMaterial string) *Box {

@@ -11,6 +11,23 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
+    <div id="loginOverlay" class="login-overlay hidden" aria-hidden="true">
+      <form id="loginForm" class="login-card">
+        <div class="brand-label">Filament Tracker</div>
+        <h1>Вход</h1>
+        <p class="form-hint">Войдите, чтобы управлять складом и принтерами.</p>
+        <label>
+          <span>Логин</span>
+          <input name="username" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          <span>Пароль</span>
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <div id="loginError" class="form-status"></div>
+        <button type="submit" class="primary-btn">Войти</button>
+      </form>
+    </div>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
     <div class="page-shell">
       <aside class="sidebar">
@@ -20,6 +37,10 @@
             <div class="brand-label">Filament</div>
             <strong>Tracker</strong>
           </div>
+        </div>
+        <div class="sidebar-user">
+          <span id="authUserLabel" class="muted"></span>
+          <button type="button" id="logoutBtn" class="mini-btn hidden">Выйти</button>
         </div>
 
         <nav class="nav">

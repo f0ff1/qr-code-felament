@@ -16,6 +16,16 @@ const state = {
   completedNotified: new Set(),
   bambuCodeSent: false,
   productPage: 0,
+  authenticated: false,
+  authDisabled: false,
+  username: '',
+  config: {
+    spool_low_weight_g: 200,
+    printer_power_kw: 0.35,
+    labor_per_hour: 12,
+    electricity_rate_person: 0.1176,
+    electricity_rate_legal: 0.18381,
+  },
 };
 
 const refs = {
@@ -72,10 +82,15 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
   try {
     const finalOptions = {
       ...options,
+      credentials: options.credentials || 'same-origin',
       signal: options.signal || controller.signal,
     };
 
     const response = await fetch(url, finalOptions);
+    if (response.status === 401) {
+      showLoginOverlay(true);
+      throw new Error('Требуется вход в систему');
+    }
     if (!response.ok) {
       const text = await response.text();
       throw new Error(translateApiError(text, response.status));
@@ -107,6 +122,7 @@ function translateApiError(raw, status = 0) {
   try {
     const parsed = JSON.parse(text);
     if (parsed && typeof parsed === 'object') {
+      if (parsed.code === 'unauthorized') return 'Требуется вход в систему';
       message = String(parsed.message || parsed.error || parsed.status || text);
     }
   } catch (_error) {
@@ -147,7 +163,8 @@ function getSpoolStatus(spool) {
 
   if (hasActiveJob) return 'in_use';
   if (remaining <= 0) return 'empty';
-  if (remaining < 200 || (initial > 0 && remaining <= Math.max(50, initial * 0.2))) return 'low';
+  const lowThreshold = Number(state.config.spool_low_weight_g ?? 200);
+  if (remaining < lowThreshold || (initial > 0 && remaining <= Math.max(50, initial * 0.2))) return 'low';
   return 'available';
 }
 
@@ -513,7 +530,7 @@ function getFilteredSpools() {
     if (!matchesQuery) return false;
 
     if (state.filter === 'all') return true;
-    if (state.filter === 'low') return spool.status === 'low' || spool.status === 'empty' || Number(spool.remaining ?? 0) < 200;
+    if (state.filter === 'low') return spool.status === 'low' || spool.status === 'empty' || Number(spool.remaining ?? 0) < Number(state.config.spool_low_weight_g ?? 200);
     if (state.filter === 'available') return spool.status === 'available' || Number(spool.remaining ?? 0) > 0;
     return true;
   });
@@ -552,7 +569,7 @@ function renderOverview() {
   const spoolList = [...state.spools]
     .filter((spool) => {
       if (state.filter === 'all') return true;
-      if (state.filter === 'low') return spool.status === 'low' || spool.status === 'empty' || Number(spool.remaining ?? 0) < 200;
+      if (state.filter === 'low') return spool.status === 'low' || spool.status === 'empty' || Number(spool.remaining ?? 0) < Number(state.config.spool_low_weight_g ?? 200);
       if (state.filter === 'available') return spool.status === 'available' || Number(spool.remaining ?? 0) > 0;
       return false;
     })
@@ -1168,9 +1185,11 @@ function calculateProductCost(form) {
   const totalHours = hours + minutes / 60;
 
   const materialCost = (weight / 1000) * Number(selectedSpool.price || 0);
-  const electricityRate = form.querySelector('.billing-toggle[value="legal"]').checked ? 0.18381 : 0.1176;
-  const electricityCost = totalHours * 0.35 * electricityRate;
-  const laborCost = totalHours * 12;
+  const electricityRate = form.querySelector('.billing-toggle[value="legal"]').checked
+    ? Number(state.config.electricity_rate_legal ?? 0.18381)
+    : Number(state.config.electricity_rate_person ?? 0.1176);
+  const electricityCost = totalHours * Number(state.config.printer_power_kw ?? 0.35) * electricityRate;
+  const laborCost = totalHours * Number(state.config.labor_per_hour ?? 12);
 
   return Number((materialCost + electricityCost + laborCost).toFixed(2));
 }
@@ -1986,13 +2005,112 @@ function bindEvents() {
   });
 }
 
+async function loadAppConfig() {
+  try {
+    const cfg = await fetchJSON('/api/config');
+    if (cfg && typeof cfg === 'object') {
+      state.config = { ...state.config, ...cfg };
+    }
+  } catch (_error) {
+    // keep defaults
+  }
+}
+
+function showLoginOverlay(visible) {
+  const overlay = document.getElementById('loginOverlay');
+  if (!overlay) return;
+  overlay.classList.toggle('hidden', !visible);
+  overlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  const page = document.querySelector('.page-shell');
+  if (page) page.style.visibility = visible ? 'hidden' : '';
+}
+
+function updateAuthChrome() {
+  const label = document.getElementById('authUserLabel');
+  const logoutBtn = document.getElementById('logoutBtn');
+  if (label) {
+    label.textContent = state.authDisabled
+      ? 'dev (auth off)'
+      : (state.username ? `Вы вошли: ${state.username}` : '');
+  }
+  if (logoutBtn) {
+    logoutBtn.classList.toggle('hidden', state.authDisabled || !state.authenticated);
+  }
+}
+
+async function ensureAuthenticated() {
+  await loadAppConfig();
+  try {
+    const me = await fetchJSON('/api/auth/me');
+    state.authenticated = Boolean(me?.authenticated);
+    state.authDisabled = Boolean(me?.auth_disabled);
+    state.username = me?.username || '';
+    updateAuthChrome();
+    if (state.authenticated || state.authDisabled) {
+      showLoginOverlay(false);
+      return true;
+    }
+  } catch (_error) {
+    state.authenticated = false;
+  }
+  showLoginOverlay(true);
+  return false;
+}
+
+async function submitLogin(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const errorEl = document.getElementById('loginError');
+  if (errorEl) errorEl.textContent = '';
+  try {
+    const result = await fetchJSON('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        username: form.username.value,
+        password: form.password.value,
+      }),
+    });
+    state.authenticated = Boolean(result?.authenticated);
+    state.authDisabled = Boolean(result?.auth_disabled);
+    state.username = result?.username || form.username.value;
+    updateAuthChrome();
+    showLoginOverlay(false);
+    form.reset();
+    connectEvents();
+    refreshCloudAccountBadge();
+    loadFilamentCatalog();
+    loadNotificationHistory();
+    await loadData();
+  } catch (error) {
+    if (errorEl) errorEl.textContent = error.message || 'Неверный логин или пароль';
+  }
+}
+
+async function logout() {
+  try {
+    await fetchJSON('/api/auth/logout', { method: 'POST' });
+  } catch (_error) {
+    // ignore
+  }
+  state.authenticated = false;
+  state.username = '';
+  updateAuthChrome();
+  showLoginOverlay(true);
+}
+
 function init() {
   bindEvents();
-  connectEvents();
-  refreshCloudAccountBadge();
-  loadFilamentCatalog();
-  loadNotificationHistory();
-  loadData();
+  document.getElementById('loginForm')?.addEventListener('submit', submitLogin);
+  document.getElementById('logoutBtn')?.addEventListener('click', logout);
+  ensureAuthenticated().then((ok) => {
+    if (!ok) return;
+    connectEvents();
+    refreshCloudAccountBadge();
+    loadFilamentCatalog();
+    loadNotificationHistory();
+    loadData();
+  });
 }
 
 init();

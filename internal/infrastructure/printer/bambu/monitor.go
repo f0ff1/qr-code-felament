@@ -89,12 +89,26 @@ type printTelemetry struct {
 }
 
 func NewMonitor(printers PrinterStore, jobs JobSyncer, notifier EventPublisher) *Monitor {
+	return NewMonitorWithOptions(printers, jobs, notifier, secrets.NewBoxFromEnv(), 7*time.Second)
+}
+
+func NewMonitorWithSecrets(printers PrinterStore, jobs JobSyncer, notifier EventPublisher, box *secrets.Box, interval time.Duration) *Monitor {
+	return NewMonitorWithOptions(printers, jobs, notifier, box, interval)
+}
+
+func NewMonitorWithOptions(printers PrinterStore, jobs JobSyncer, notifier EventPublisher, box *secrets.Box, interval time.Duration) *Monitor {
+	if box == nil {
+		box = secrets.NewBoxFromEnv()
+	}
+	if interval <= 0 {
+		interval = 7 * time.Second
+	}
 	return &Monitor{
 		printers:      printers,
 		jobs:          jobs,
 		notifier:      notifier,
-		secrets:       secrets.NewBoxFromEnv(),
-		interval:      7 * time.Second,
+		secrets:       box,
+		interval:      interval,
 		known:         make(map[string]uuid.UUID),
 		cloudSessions: make(map[string]*cloudSession),
 	}
@@ -189,7 +203,7 @@ func (m *Monitor) ensureConnected(p printerdomain.Printer) error {
 	_, err := m.client.Add(bambulabs.Config{
 		Host:         ip,
 		SerialNumber: p.LANSerial,
-		AccessCode:   p.LANAccessCode,
+		AccessCode:   m.openSecret(p.LANAccessCode),
 		Model:        mapModel(p.Model),
 		MQTTPort:     8883,
 	})

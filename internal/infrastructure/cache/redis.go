@@ -13,15 +13,25 @@ type Client struct {
 	*redis.Client
 }
 
+type Options struct {
+	Addr     string
+	Password string
+	DB       int
+}
+
 func NewClient(addr string) (*Client, error) {
-	if addr == "" {
+	return NewClientWithOptions(Options{Addr: addr})
+}
+
+func NewClientWithOptions(opts Options) (*Client, error) {
+	if opts.Addr == "" {
 		return nil, fmt.Errorf("redis address is empty")
 	}
 
 	client := redis.NewClient(&redis.Options{
-		Addr:         addr,
-		Password:     "",
-		DB:           0,
+		Addr:         opts.Addr,
+		Password:     opts.Password,
+		DB:           opts.DB,
 		PoolSize:     64,
 		MinIdleConns: 8,
 		DialTimeout:  2 * time.Second,

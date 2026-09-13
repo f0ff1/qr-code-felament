@@ -17,7 +17,6 @@ services:
       start_period: 5s
     volumes:
       - postgres_data:/var/lib/postgresql/data
-      - ./db/migrations:/docker-entrypoint-initdb.d:ro
 
   redis:
     image: redis:7-alpine
@@ -34,34 +33,45 @@ services:
     volumes:
       - redis_data:/data
 
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: migrate
+    container_name: filament-migrate
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://filament:filament@postgres:5432/filament?sslmode=disable
+      MIGRATIONS_DIR: /migrations
+    volumes:
+      - ./db/migrations:/migrations:ro
+    restart: "no"
+
   app:
     build:
       context: .
       dockerfile: Dockerfile
+      target: app
     container_name: filament-app
     restart: unless-stopped
     depends_on:
-      postgres:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
     environment:
+      APP_ENV: development
       DATABASE_URL: postgres://filament:filament@postgres:5432/filament?sslmode=disable
       REDIS_ADDR: redis:6379
       PORT: "8080"
-    command:
-      - sh
-      - -c
-      - |
-        until pg_isready -h postgres -p 5432 -U filament; do
-          echo "waiting for postgres..."
-          sleep 2
-        done
-        until redis-cli -h redis -p 6379 ping | grep -q PONG; do
-          echo "waiting for redis..."
-          sleep 2
-        done
-        /app/app
+      BAMBU_SECRETS_KEY: local-compose-secrets-key-change-me
+      SESSION_SECRET: local-compose-session-secret-change-me
+      ADMIN_USERNAME: admin
+      ADMIN_PASSWORD: admin
+      PUBLIC_BASE_URL: http://localhost:8080
+      REQUIRE_POSTGRES: "true"
     ports:
       - "8080:8080"
 

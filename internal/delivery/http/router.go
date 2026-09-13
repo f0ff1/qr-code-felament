@@ -20,17 +20,9 @@ import (
 	productdomain "filamenttracker/internal/domain/product"
 	spooldomain "filamenttracker/internal/domain/spool"
 	"filamenttracker/internal/infrastructure/printer/bambu"
-	"filamenttracker/internal/infrastructure/printer/mock"
-	"filamenttracker/internal/repository/memory"
-	postgresrepo "filamenttracker/internal/repository/postgres"
-	inventoryusecase "filamenttracker/internal/usecase/inventory"
 	notificationusecase "filamenttracker/internal/usecase/notification"
-	predictionusecase "filamenttracker/internal/usecase/prediction"
 	printerusecase "filamenttracker/internal/usecase/printer"
 	printjobusecase "filamenttracker/internal/usecase/printjob"
-	productusecase "filamenttracker/internal/usecase/product"
-	runtimeusecase "filamenttracker/internal/usecase/runtime"
-	spoolusecase "filamenttracker/internal/usecase/spool"
 
 	"github.com/google/uuid"
 )
@@ -97,7 +89,7 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, proj
 		statusLabel = "в работе"
 	case currentRemaining <= 0:
 		statusLabel = "закончился"
-	case currentRemaining < 200:
+	case currentRemaining < spooldomain.LowWeightGrams:
 		statusLabel = "заканчивается"
 	}
 
@@ -172,61 +164,6 @@ func renderSpoolPublicPage(spoolEntity spooldomain.Spool, currentRemaining, proj
 	)
 }
 
-func jsonError(w http.ResponseWriter, message string, status int) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(map[string]any{
-		"status":  "error",
-		"code":    status,
-		"message": localizeAPIError(message),
-	})
-}
-
-func localizeAPIError(message string) string {
-	msg := strings.TrimSpace(message)
-	lower := strings.ToLower(msg)
-	switch {
-	case msg == "":
-		return "Произошла ошибка. Попробуйте ещё раз."
-	case strings.Contains(lower, "insufficient filament"):
-		return "На катушке не хватает пластика для этой печати"
-	case strings.Contains(lower, "invalid printer id"):
-		return "Некорректный идентификатор принтера"
-	case strings.Contains(lower, "invalid product id"):
-		return "Некорректный идентификатор продукта"
-	case strings.Contains(lower, "invalid spool id"):
-		return "Некорректный идентификатор катушки"
-	case strings.Contains(lower, "invalid job id"):
-		return "Некорректный идентификатор задачи"
-	case strings.Contains(lower, "invalid payload"):
-		return "Некорректные данные запроса"
-	case strings.Contains(lower, "method not allowed"):
-		return "Метод не поддерживается"
-	case strings.Contains(lower, "not found"):
-		return "Объект не найден"
-	case strings.Contains(lower, "job is not a draft"):
-		return "Эта задача уже не черновик"
-	case strings.Contains(lower, "invalid material"):
-		return "Некорректный материал катушки"
-	case strings.Contains(lower, "invalid brand") || strings.Contains(lower, "invalid manufacturer"):
-		return "Некорректный производитель катушки"
-	case strings.Contains(lower, "invalid color"):
-		return "Некорректный цвет катушки"
-	case strings.Contains(lower, "invalid input"):
-		cleaned := strings.TrimSpace(strings.TrimPrefix(msg, "invalid input:"))
-		cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, "invalid input"))
-		if cleaned == "" || cleaned == msg {
-			return "Некорректные данные"
-		}
-		return localizeAPIError(cleaned)
-	default:
-		if strings.HasPrefix(lower, "invalid ") {
-			return "Некорректные данные запроса"
-		}
-		return msg
-	}
-}
-
 func printerJSON(printer printerdomain.Printer) map[string]any {
 	item := map[string]any{
 		"id":            printer.ID.String(),
@@ -261,77 +198,28 @@ func (n notifyBridge) Publish(eventType, message string, payload map[string]any)
 }
 
 func NewRouter() http.Handler {
+	cfg := config.Load()
+	app, err := bootstrap.NewApp(cfg)
+	if err != nil {
+		log.Fatalf("bootstrap app: %v", err)
+	}
+	app.Start(context.Background())
+	return NewServer(app)
+}
+
+func NewServer(app *bootstrap.App) http.Handler {
 	mux := http.NewServeMux()
-	runtime := bootstrap.NewRuntime()
 
-	var (
-		spoolRepo      spooldomain.Repository
-		printerRepo    printerusecase.Repository
-		productRepo    productusecase.ProductRepository
-		printJobRepo   printjobusecase.PrintJobRepository
-		inventoryRepo  inventoryusecase.InventoryRepository
-		cloudAccountRepo printerusecase.CloudAccountRepository
-	)
+	spoolService := app.SpoolService
+	printerService := app.PrinterService
+	productService := app.ProductService
+	printJobService := app.PrintJobService
+	inventoryService := app.InventoryService
+	forecastService := app.ForecastService
+	notifier := app.NotificationService
+	bambuMonitor := app.Monitor
 
-	if runtime.DB != nil {
-		spoolRepo = postgresrepo.NewSpoolRepository(runtime.DB)
-		printerRepo = postgresrepo.NewPrinterRepository(runtime.DB)
-		productRepo = postgresrepo.NewProductRepository(runtime.DB)
-		printJobRepo = postgresrepo.NewPrintJobRepository(runtime.DB)
-		inventoryRepo = postgresrepo.NewInventoryRepository(runtime.DB)
-		cloudAccountRepo = postgresrepo.NewCloudAccountRepository(runtime.DB)
-		log.Println("using postgres repositories")
-	} else {
-		spoolRepo = memory.NewRepository()
-		printerRepo = memory.NewPrinterRepository()
-		productRepo = memory.NewProductRepository()
-		printJobRepo = memory.NewPrintJobRepository()
-		inventoryRepo = memory.NewInventoryRepository()
-		cloudAccountRepo = memory.NewCloudAccountRepository()
-		log.Println("using in-memory repositories")
-	}
-
-	spoolService := spoolusecase.NewService(spoolRepo)
-	printerService := printerusecase.NewService(printerRepo, mock.Adapter{}, cloudAccountRepo)
-	productService := productusecase.NewService(productRepo)
-	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
-	inventoryService := inventoryusecase.NewService(spoolRepo, inventoryRepo)
-	forecastService := predictionusecase.NewEstimator()
-	runtimeSynchronizer := runtimeusecase.NewSynchronizer(spoolRepo, printerRepo, printJobRepo, productRepo, runtime.Redis)
-	syncRuntime := func(ctx context.Context) {
-		if err := runtimeSynchronizer.Sync(ctx); err != nil {
-			log.Printf("sync runtime state: %v", err)
-		}
-	}
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-			syncRuntime(ctx)
-			cancel()
-		}
-	}()
-	notifier := notificationusecase.NewService()
-	bambuMonitor := bambu.NewMonitor(printerRepo, printJobService, notifyBridge{notifier})
-	bambuMonitor.Start(context.Background())
-
-	// Background: refresh printers from saved Bambu Cloud account without re-login.
-	go func() {
-		ticker := time.NewTicker(2 * time.Minute)
-		defer ticker.Stop()
-		for range ticker.C {
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			if _, err := printerService.SyncSavedCloudAccount(ctx); err != nil {
-				if !strings.Contains(err.Error(), "not found") {
-					log.Printf("bambu cloud background sync: %v", err)
-				}
-			} else {
-				bambuMonitor.PollOnce(ctx)
-			}
-			cancel()
-		}
-	}()
+	registerAuthAndConfigRoutes(mux, app)
 
 	mux.HandleFunc("/api/bambu/cloud/account", func(w http.ResponseWriter, r *http.Request) {
 		switch r.Method {
@@ -470,11 +358,11 @@ func NewRouter() http.Handler {
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		dbStatus := "memory"
-		if runtime.DB != nil {
+		if app.Runtime != nil && app.Runtime.DB != nil {
 			dbStatus = "postgres"
 			ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
 			defer cancel()
-			if err := runtime.DB.PingContext(ctx); err != nil {
+			if err := app.Runtime.DB.PingContext(ctx); err != nil {
 				jsonError(w, err.Error(), http.StatusServiceUnavailable)
 				return
 			}
@@ -1280,7 +1168,10 @@ func NewRouter() http.Handler {
 		}
 		_, _ = w.Write(content)
 	})
-	return mux
+	var handler http.Handler = mux
+	handler = withAuth(app, handler)
+	handler = withMaxBytes(handler, app.Config.HTTPMaxBodyBytes)
+	return handler
 }
 
 func timeFromString(raw string) (time.Duration, error) {

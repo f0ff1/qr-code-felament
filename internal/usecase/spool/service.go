@@ -78,7 +78,7 @@ func (s *Service) UpdateRemaining(ctx context.Context, id uuid.UUID, remainingWe
 	entity.UpdatedAt = time.Now()
 	if remainingWeight <= 0 {
 		entity.Status = spooldomain.StatusEmpty
-	} else if remainingWeight < 200 {
+	} else if remainingWeight < spooldomain.LowWeightGrams {
 		entity.Status = spooldomain.StatusLow
 	} else {
 		entity.Status = spooldomain.StatusAvailable

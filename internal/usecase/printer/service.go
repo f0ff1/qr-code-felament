@@ -441,6 +441,13 @@ func (s *Service) sealPrinterCloudSecrets(p *printerdomain.Printer) error {
 		}
 		p.CloudToken = sealed
 	}
+	if p.LANAccessCode != "" {
+		sealed, err := s.sealSecret(p.LANAccessCode)
+		if err != nil {
+			return err
+		}
+		p.LANAccessCode = sealed
+	}
 	return nil
 }
 
