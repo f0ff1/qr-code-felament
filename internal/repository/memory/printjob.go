@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"filamenttracker/internal/domain"
+	"filamenttracker/internal/domain/org"
 	printjobdomain "filamenttracker/internal/domain/printjob"
 
 	"github.com/google/uuid"
@@ -21,6 +22,9 @@ func NewPrintJobRepository() *PrintJobRepository {
 func (r *PrintJobRepository) Create(ctx context.Context, j printjobdomain.PrintJob) error {
 	if _, exists := r.items[j.ID]; exists {
 		return fmt.Errorf("%w: print job already exists", domain.ErrConflict)
+	}
+	if j.SiteID == uuid.Nil {
+		j.SiteID = org.DefaultSiteID
 	}
 	r.items[j.ID] = j
 	return nil

@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"filamenttracker/internal/domain"
+	"filamenttracker/internal/domain/org"
 	printerdomain "filamenttracker/internal/domain/printer"
 
 	"github.com/google/uuid"
@@ -21,6 +22,9 @@ func NewPrinterRepository() *PrinterRepository {
 func (r *PrinterRepository) Create(ctx context.Context, p printerdomain.Printer) error {
 	if _, exists := r.items[p.ID]; exists {
 		return fmt.Errorf("%w: printer already exists", domain.ErrConflict)
+	}
+	if p.SiteID == uuid.Nil {
+		p.SiteID = org.DefaultSiteID
 	}
 	r.items[p.ID] = p
 	return nil

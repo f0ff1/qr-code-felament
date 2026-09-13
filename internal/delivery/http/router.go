@@ -39,6 +39,7 @@ func NewServer(app *bootstrap.App) http.Handler {
 	mux := http.NewServeMux()
 
 	registerAuthAndConfigRoutes(mux, app)
+	registerAdminRoutes(mux, app)
 	registerBambuRoutes(mux, app)
 	registerSpoolRoutes(mux, app)
 	registerPrinterRoutes(mux, app)

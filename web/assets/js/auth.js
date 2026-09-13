@@ -3,6 +3,7 @@ import { fetchJSON, setUnauthorizedHandler } from './api.js';
 import { loadAppConfig, loadData, loadFilamentCatalog } from './data.js';
 import { connectEvents, loadNotificationHistory } from './events.js';
 import { refreshCloudAccountBadge } from './cloud.js';
+import { syncAdminNav } from './admin.js';
 
 export function showLoginOverlay(visible) {
   const overlay = document.getElementById('loginOverlay');
@@ -15,16 +16,26 @@ export function showLoginOverlay(visible) {
 
 setUnauthorizedHandler(() => showLoginOverlay(true));
 
+export function applySession(me) {
+  state.authenticated = Boolean(me?.authenticated);
+  state.authDisabled = false;
+  state.username = me?.username || '';
+  state.role = me?.role || '';
+  state.isAdmin = Boolean(me?.is_admin);
+  state.activeSiteId = me?.active_site_id || '';
+  state.siteIds = Array.isArray(me?.site_ids) ? me.site_ids : [];
+  updateAuthChrome();
+  syncAdminNav();
+}
+
 export function updateAuthChrome() {
   const label = document.getElementById('authUserLabel');
   const logoutBtn = document.getElementById('logoutBtn');
   if (label) {
-    label.textContent = state.authDisabled
-      ? 'dev (auth off)'
-      : (state.username ? `Вы вошли: ${state.username}` : '');
+    label.textContent = state.username ? `Вы вошли: ${state.username}` : '';
   }
   if (logoutBtn) {
-    logoutBtn.classList.toggle('hidden', state.authDisabled || !state.authenticated);
+    logoutBtn.classList.toggle('hidden', !state.authenticated);
   }
 }
 
@@ -32,11 +43,8 @@ export async function ensureAuthenticated() {
   await loadAppConfig();
   try {
     const me = await fetchJSON('/api/auth/me');
-    state.authenticated = Boolean(me?.authenticated);
-    state.authDisabled = Boolean(me?.auth_disabled);
-    state.username = me?.username || '';
-    updateAuthChrome();
-    if (state.authenticated || state.authDisabled) {
+    applySession(me);
+    if (state.authenticated) {
       showLoginOverlay(false);
       return true;
     }
@@ -61,10 +69,7 @@ export async function submitLogin(event) {
         password: form.password.value,
       }),
     });
-    state.authenticated = Boolean(result?.authenticated);
-    state.authDisabled = Boolean(result?.auth_disabled);
-    state.username = result?.username || form.username.value;
-    updateAuthChrome();
+    applySession(result);
     showLoginOverlay(false);
     form.reset();
     connectEvents();
@@ -77,6 +82,27 @@ export async function submitLogin(event) {
   }
 }
 
+export async function submitForgotPassword(event) {
+  event.preventDefault();
+  const form = document.getElementById('loginForm');
+  const errorEl = document.getElementById('loginError');
+  const username = form?.username?.value?.trim();
+  if (!username) {
+    if (errorEl) errorEl.textContent = 'Введите логин для запроса сброса пароля';
+    return;
+  }
+  try {
+    const result = await fetchJSON('/api/auth/forgot-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username }),
+    });
+    if (errorEl) errorEl.textContent = result?.message || 'Заявка отправлена администратору';
+  } catch (error) {
+    if (errorEl) errorEl.textContent = error.message || 'Не удалось отправить заявку';
+  }
+}
+
 export async function logout() {
   try {
     await fetchJSON('/api/auth/logout', { method: 'POST' });
@@ -85,6 +111,9 @@ export async function logout() {
   }
   state.authenticated = false;
   state.username = '';
+  state.role = '';
+  state.isAdmin = false;
   updateAuthChrome();
+  syncAdminNav();
   showLoginOverlay(true);
 }

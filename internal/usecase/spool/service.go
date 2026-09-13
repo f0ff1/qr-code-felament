@@ -20,11 +20,18 @@ func NewService(repo spooldomain.Repository) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, material spooldomain.Material, color, manufacturer string, initialWeight int, price float64) (spooldomain.Spool, error) {
+	return s.CreateForSite(ctx, uuid.Nil, material, color, manufacturer, initialWeight, price)
+}
+
+func (s *Service) CreateForSite(ctx context.Context, siteID uuid.UUID, material spooldomain.Material, color, manufacturer string, initialWeight int, price float64) (spooldomain.Spool, error) {
 	if initialWeight <= 0 {
 		return spooldomain.Spool{}, domain.ErrInvalid
 	}
 
 	entity := spooldomain.NewSpool(material, color, manufacturer, initialWeight, price)
+	if siteID != uuid.Nil {
+		entity.SiteID = siteID
+	}
 	if err := s.repo.Create(ctx, entity); err != nil {
 		return spooldomain.Spool{}, err
 	}

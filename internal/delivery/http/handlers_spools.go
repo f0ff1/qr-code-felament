@@ -27,12 +27,16 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			siteID := activeSiteID(r.Context())
 			payload := make([]map[string]any, 0, len(spools))
 			jobs, jobsErr := printJobService.List(context.Background())
 			if jobsErr != nil {
 				jobs = nil
 			}
 			for _, spool := range spools {
+				if siteID != uuid.Nil && spool.SiteID != uuid.Nil && spool.SiteID != siteID {
+					continue
+				}
 				future := spool.CurrentWeight
 				current := future
 				if jobsErr == nil {
@@ -81,7 +85,7 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, "некорректный вес или цена", http.StatusBadRequest)
 				return
 			}
-			entity, err := spoolService.Create(context.Background(), spooldomain.Material(input.Material), input.Color, input.Manufacturer, input.InitialWeight, input.Price)
+			entity, err := spoolService.CreateForSite(r.Context(), activeSiteID(r.Context()), spooldomain.Material(input.Material), input.Color, input.Manufacturer, input.InitialWeight, input.Price)
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return

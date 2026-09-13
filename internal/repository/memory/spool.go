@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"filamenttracker/internal/domain"
+	"filamenttracker/internal/domain/org"
 	spooldomain "filamenttracker/internal/domain/spool"
 
 	"github.com/google/uuid"
@@ -21,6 +22,9 @@ func NewRepository() *Repository {
 func (r *Repository) Create(ctx context.Context, s spooldomain.Spool) error {
 	if _, exists := r.items[s.ID]; exists {
 		return fmt.Errorf("%w: spool already exists", domain.ErrConflict)
+	}
+	if s.SiteID == uuid.Nil {
+		s.SiteID = org.DefaultSiteID
 	}
 	r.items[s.ID] = s
 	return nil

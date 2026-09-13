@@ -3,6 +3,8 @@ package spool
 import (
 	"time"
 
+	"filamenttracker/internal/domain/org"
+
 	"github.com/google/uuid"
 )
 
@@ -25,6 +27,7 @@ const (
 
 type Spool struct {
 	ID            uuid.UUID
+	SiteID        uuid.UUID
 	QRToken       string
 	Material      Material
 	Color         string
@@ -40,6 +43,7 @@ type Spool struct {
 func NewSpool(material Material, color, manufacturer string, initialWeight int, price float64) Spool {
 	return Spool{
 		ID:            uuid.New(),
+		SiteID:        org.DefaultSiteID,
 		QRToken:       GenerateQRToken(),
 		Material:      material,
 		Color:         color,

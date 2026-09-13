@@ -15,6 +15,7 @@ import (
 	"filamenttracker/internal/infrastructure/session"
 	"filamenttracker/internal/repository/memory"
 	postgresrepo "filamenttracker/internal/repository/postgres"
+	adminusecase "filamenttracker/internal/usecase/admin"
 	authusecase "filamenttracker/internal/usecase/auth"
 	inventoryusecase "filamenttracker/internal/usecase/inventory"
 	notificationusecase "filamenttracker/internal/usecase/notification"
@@ -51,6 +52,7 @@ type App struct {
 	Secrets  *secrets.Box
 	Sessions *session.Store
 	Auth     *authusecase.Service
+	AdminService *adminusecase.Service
 
 	SpoolService      *spoolusecase.Service
 	PrinterService    *printerusecase.Service
@@ -90,6 +92,10 @@ func NewApp(cfg config.Settings) (*App, error) {
 		printJobRepo     printjobusecase.PrintJobRepository
 		inventoryRepo    inventoryusecase.InventoryRepository
 		cloudAccountRepo printerusecase.CloudAccountRepository
+		orgRepo          adminusecase.OrgRepository
+		siteRepo         adminusecase.SiteRepository
+		userRepo         authusecase.UserRepository
+		resetRepo        authusecase.PasswordResetRepository
 	)
 
 	if runtime.DB != nil {
@@ -99,6 +105,10 @@ func NewApp(cfg config.Settings) (*App, error) {
 		printJobRepo = postgresrepo.NewPrintJobRepository(runtime.DB)
 		inventoryRepo = postgresrepo.NewInventoryRepository(runtime.DB)
 		cloudAccountRepo = postgresrepo.NewCloudAccountRepository(runtime.DB)
+		orgRepo = postgresrepo.NewOrganizationRepository(runtime.DB)
+		siteRepo = postgresrepo.NewSiteRepository(runtime.DB)
+		userRepo = postgresrepo.NewUserRepository(runtime.DB)
+		resetRepo = postgresrepo.NewPasswordResetRepository(runtime.DB)
 		log.Println("using postgres repositories")
 	} else {
 		spoolRepo = memory.NewRepository()
@@ -107,21 +117,32 @@ func NewApp(cfg config.Settings) (*App, error) {
 		printJobRepo = memory.NewPrintJobRepository()
 		inventoryRepo = memory.NewInventoryRepository()
 		cloudAccountRepo = memory.NewCloudAccountRepository()
+		orgRepo = memory.NewOrganizationRepository()
+		siteRepo = memory.NewSiteRepository()
+		userRepo = memory.NewUserRepository()
+		resetRepo = memory.NewPasswordResetRepository()
 		log.Println("using in-memory repositories")
 	}
 
 	sessions := session.NewStore(cfg.SessionTTL)
-	authService, err := authusecase.NewService(cfg, sessions)
+	notifierSvc := notificationusecase.NewServiceWithTTL(cfg.NotificationTTL)
+	bridge := notifyBridge{notifierSvc}
+
+	authService, err := authusecase.NewService(cfg, sessions, userRepo, resetRepo, bridge)
 	if err != nil {
 		_ = runtime.Close()
 		return nil, err
 	}
-	if !authService.Enabled() && cfg.IsDevelopment() {
-		log.Println("WARNING: admin auth is not configured — API is open in development")
+	adminService := adminusecase.NewService(orgRepo, siteRepo, userRepo, resetRepo, authService)
+	ctxBootstrap := context.Background()
+	if err := adminService.EnsureDefaults(ctxBootstrap); err != nil {
+		_ = runtime.Close()
+		return nil, fmt.Errorf("ensure defaults: %w", err)
 	}
-
-	notifierSvc := notificationusecase.NewServiceWithTTL(cfg.NotificationTTL)
-	bridge := notifyBridge{notifierSvc}
+	if err := authService.BootstrapAdmin(ctxBootstrap); err != nil {
+		_ = runtime.Close()
+		return nil, fmt.Errorf("bootstrap admin: %w", err)
+	}
 
 	printerService := printerusecase.NewServiceWithDeps(printerRepo, mock.Adapter{}, cloudAccountRepo, bambu.NewCloudClientAdapter(), box)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
@@ -133,6 +154,7 @@ func NewApp(cfg config.Settings) (*App, error) {
 		Secrets:             box,
 		Sessions:            sessions,
 		Auth:                authService,
+		AdminService:        adminService,
 		SpoolService:        spoolusecase.NewService(spoolRepo),
 		PrinterService:      printerService,
 		ProductService:      productusecase.NewService(productRepo),

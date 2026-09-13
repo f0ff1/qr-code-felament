@@ -27,9 +27,10 @@ import {
   updateCloudLoginButton,
   refreshCloudAccountBadge,
 } from './cloud.js';
-import { ensureAuthenticated, submitLogin, logout } from './auth.js';
+import { ensureAuthenticated, submitLogin, logout, submitForgotPassword } from './auth.js';
 import { connectEvents, loadNotificationHistory } from './events.js';
 import { loadFilamentCatalog } from './data.js';
+import { bindAdminEvents, loadSitesForAdmin, renderAdminUsers } from './admin.js';
 
 function bindEvents() {
   // Local UI tick: progress/status without hitting the network.
@@ -154,6 +155,10 @@ function bindEvents() {
         const isActive = panel.dataset.viewPanel === view;
         panel.classList.toggle('hidden', !isActive);
       });
+      if (view === 'admin') {
+        loadSitesForAdmin();
+        renderAdminUsers();
+      }
     });
   });
 
@@ -188,14 +193,18 @@ function bindEvents() {
 
 function init() {
   bindEvents();
+  bindAdminEvents();
   document.getElementById('loginForm')?.addEventListener('submit', submitLogin);
+  document.getElementById('forgotPasswordBtn')?.addEventListener('click', submitForgotPassword);
   document.getElementById('logoutBtn')?.addEventListener('click', logout);
-  ensureAuthenticated().then((ok) => {
+  ensureAuthenticated().then(async (ok) => {
     if (!ok) return;
     connectEvents();
     refreshCloudAccountBadge();
     loadFilamentCatalog();
     loadNotificationHistory();
+    await loadSitesForAdmin();
+    await renderAdminUsers();
     loadData();
   });
 }

@@ -26,6 +26,21 @@ func testRouter(t *testing.T) http.Handler {
 	return NewRouter()
 }
 
+func withSessionCookie(t *testing.T, handler http.Handler, req *http.Request) *http.Request {
+	t.Helper()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"admin","password":"admin"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusOK {
+		t.Fatalf("login status = %d body=%s", loginRes.Code, loginRes.Body.String())
+	}
+	for _, c := range loginRes.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	return req
+}
+
 func TestRouterHealthEndpoint(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	w := httptest.NewRecorder()
@@ -41,10 +56,11 @@ func TestRouterHealthEndpoint(t *testing.T) {
 }
 
 func TestRouterSpoolListEndpoint(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/spools", nil)
+	handler := testRouter(t)
+	r := withSessionCookie(t, handler, httptest.NewRequest(http.MethodGet, "/api/spools", nil))
 	w := httptest.NewRecorder()
 
-	testRouter(t).ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -52,10 +68,11 @@ func TestRouterSpoolListEndpoint(t *testing.T) {
 }
 
 func TestRouterInventorySummaryEndpoint(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/inventory/summary", nil)
+	handler := testRouter(t)
+	r := withSessionCookie(t, handler, httptest.NewRequest(http.MethodGet, "/api/inventory/summary", nil))
 	w := httptest.NewRecorder()
 
-	testRouter(t).ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -66,10 +83,11 @@ func TestRouterInventorySummaryEndpoint(t *testing.T) {
 }
 
 func TestRouterForecastEndpoint(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/forecast?requiredWeight=200", nil)
+	handler := testRouter(t)
+	r := withSessionCookie(t, handler, httptest.NewRequest(http.MethodGet, "/api/forecast?requiredWeight=200", nil))
 	w := httptest.NewRecorder()
 
-	testRouter(t).ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -155,7 +173,7 @@ func TestPublicSpoolPageAndQRImage(t *testing.T) {
 	handler := testRouter(t)
 
 	createBody := `{"material":"PLA","color":"чёрный","manufacturer":"Bambu Lab","initialWeight":1000,"price":30}`
-	createReq := httptest.NewRequest(http.MethodPost, "/api/spools", strings.NewReader(createBody))
+	createReq := withSessionCookie(t, handler, httptest.NewRequest(http.MethodPost, "/api/spools", strings.NewReader(createBody)))
 	createReq.Header.Set("Content-Type", "application/json")
 	createRes := httptest.NewRecorder()
 	handler.ServeHTTP(createRes, createReq)

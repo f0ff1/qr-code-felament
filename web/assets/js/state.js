@@ -19,6 +19,11 @@ export const state = {
   authenticated: false,
   authDisabled: false,
   username: '',
+  role: '',
+  isAdmin: false,
+  activeSiteId: '',
+  siteIds: [],
+  sites: [],
   config: {
     spool_low_weight_g: 200,
     printer_power_kw: 0.35,

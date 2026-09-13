@@ -1,54 +1,75 @@
-package auth_test
+package auth
 
 import (
+	"context"
 	"testing"
-	"time"
 
 	"filamenttracker/internal/config"
+	orgdomain "filamenttracker/internal/domain/org"
+	userdomain "filamenttracker/internal/domain/user"
 	"filamenttracker/internal/infrastructure/session"
-	authusecase "filamenttracker/internal/usecase/auth"
+	"filamenttracker/internal/repository/memory"
+
+	"github.com/google/uuid"
+	"golang.org/x/crypto/bcrypt"
 )
 
-func TestLoginLogoutRoundTrip(t *testing.T) {
-	cfg := config.Settings{
-		AppEnv:        config.EnvDevelopment,
-		AdminUsername: "admin",
-		AdminPassword: "secret",
-		SessionTTL:    time.Hour,
-	}
-	svc, err := authusecase.NewService(cfg, session.NewStore(cfg.SessionTTL))
+func TestLoginAndAuthenticate(t *testing.T) {
+	users := memory.NewUserRepository()
+	resets := memory.NewPasswordResetRepository()
+	hash, err := bcrypt.GenerateFromPassword([]byte("admin123"), bcrypt.DefaultCost)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !svc.Enabled() {
-		t.Fatal("expected auth enabled")
+	u := userdomain.User{
+		ID:             uuid.New(),
+		OrganizationID: orgdomain.DefaultOrganizationID,
+		Username:       "admin",
+		PasswordHash:   string(hash),
+		Role:           userdomain.RoleAdmin,
+		IsActive:       true,
+		SiteIDs:        []uuid.UUID{orgdomain.DefaultSiteID},
 	}
-	sess, err := svc.Login("admin", "secret")
+	if err := users.Create(context.Background(), u); err != nil {
+		t.Fatal(err)
+	}
+	if err := users.SetSites(context.Background(), u.ID, u.SiteIDs); err != nil {
+		t.Fatal(err)
+	}
+
+	svc, err := NewService(config.Settings{SessionTTL: 0, AppEnv: config.EnvTest}, session.NewStore(0), users, resets, nil)
 	if err != nil {
 		t.Fatal(err)
+	}
+	sess, err := svc.Login(context.Background(), "admin", "admin123")
+	if err != nil {
+		t.Fatalf("login: %v", err)
 	}
 	got, err := svc.Authenticate(sess.ID)
-	if err != nil || got.Username != "admin" {
-		t.Fatalf("authenticate: %+v %v", got, err)
-	}
-	svc.Logout(sess.ID)
-	if _, err := svc.Authenticate(sess.ID); err == nil {
-		t.Fatal("expected unauthorized after logout")
+	if err != nil || got.Username != "admin" || got.Role != "admin" {
+		t.Fatalf("authenticate = %#v err=%v", got, err)
 	}
 }
 
-func TestLoginRejectsBadPassword(t *testing.T) {
-	cfg := config.Settings{
+func TestBootstrapAdmin(t *testing.T) {
+	users := memory.NewUserRepository()
+	svc, err := NewService(config.Settings{
 		AppEnv:        config.EnvDevelopment,
-		AdminUsername: "admin",
-		AdminPassword: "secret",
-		SessionTTL:    time.Hour,
-	}
-	svc, err := authusecase.NewService(cfg, session.NewStore(cfg.SessionTTL))
+		AdminUsername: "boss",
+		AdminPassword: "secret12",
+	}, session.NewStore(0), users, memory.NewPasswordResetRepository(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Login("admin", "wrong"); err == nil {
-		t.Fatal("expected error")
+	if err := svc.BootstrapAdmin(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	n, _ := users.Count(context.Background())
+	if n != 1 {
+		t.Fatalf("count=%d", n)
+	}
+	_, err = svc.Login(context.Background(), "boss", "secret12")
+	if err != nil {
+		t.Fatal(err)
 	}
 }

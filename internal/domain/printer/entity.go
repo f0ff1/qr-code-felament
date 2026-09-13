@@ -4,6 +4,8 @@ import (
 	"strings"
 	"time"
 
+	"filamenttracker/internal/domain/org"
+
 	"github.com/google/uuid"
 )
 
@@ -29,6 +31,7 @@ const (
 
 type Printer struct {
 	ID             uuid.UUID
+	SiteID         uuid.UUID
 	Name           string
 	Model          string
 	Status         PrinterStatus
@@ -49,6 +52,7 @@ type Printer struct {
 func NewPrinter(name, model string) Printer {
 	return Printer{
 		ID:          uuid.New(),
+		SiteID:      org.DefaultSiteID,
 		Name:        name,
 		Model:       model,
 		Status:      StatusIdle,

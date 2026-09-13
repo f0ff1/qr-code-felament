@@ -3,6 +3,8 @@ package printjob
 import (
 	"time"
 
+	"filamenttracker/internal/domain/org"
+
 	"github.com/google/uuid"
 )
 
@@ -30,6 +32,7 @@ const (
 
 type PrintJob struct {
 	ID                   uuid.UUID
+	SiteID               uuid.UUID
 	PrinterID            uuid.UUID
 	ProductID            uuid.UUID
 	SpoolID              uuid.UUID
@@ -55,6 +58,7 @@ func NewPrintJob(printerID, productID, spoolID uuid.UUID, estimatedWeight int) P
 	now := time.Now()
 	return PrintJob{
 		ID:              uuid.New(),
+		SiteID:          org.DefaultSiteID,
 		PrinterID:       printerID,
 		ProductID:       productID,
 		SpoolID:         spoolID,

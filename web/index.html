@@ -26,6 +26,7 @@
         </label>
         <div id="loginError" class="form-status"></div>
         <button type="submit" class="primary-btn">Войти</button>
+        <button type="button" id="forgotPasswordBtn" class="mini-btn" style="margin-top:12px;width:100%">Забыл пароль</button>
       </form>
     </div>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
@@ -40,6 +41,7 @@
         </div>
         <div class="sidebar-user">
           <span id="authUserLabel" class="muted"></span>
+          <select id="activeSiteSelect" class="hidden" aria-label="Активный склад"></select>
           <button type="button" id="logoutBtn" class="mini-btn hidden">Выйти</button>
         </div>
 
@@ -63,6 +65,10 @@
           <button class="nav-item" data-view="jobs">
             <span class="nav-icon">⏱</span>
             Задачи
+          </button>
+          <button class="nav-item hidden" data-view="admin" data-admin-only>
+            <span class="nav-icon">⚙</span>
+            Админ
           </button>
         </nav>
 
@@ -470,6 +476,51 @@
               </div>
             </div>
             <ul id="activityList" class="activity-list"></ul>
+          </div>
+        </section>
+
+        <section class="bottom-grid view-panel hidden" data-view-panel="admin" data-admin-only>
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Админ</div>
+                <h2>Пользователи</h2>
+              </div>
+            </div>
+            <form id="adminCreateUserForm" class="data-form">
+              <div class="form-grid">
+                <label><span>Имя</span><input name="first_name" required /></label>
+                <label><span>Фамилия</span><input name="last_name" required /></label>
+                <label><span>Логин</span><input name="username" required autocomplete="off" /></label>
+                <label><span>Пароль</span><input name="password" type="password" minlength="8" placeholder="пусто = сгенерировать" autocomplete="new-password" /></label>
+                <label><span>Роль</span>
+                  <select name="role" required>
+                    <option value="operator">operator</option>
+                    <option value="viewer">viewer</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </label>
+                <label><span>Склад</span><select name="site_id" id="userSiteSelect" required></select></label>
+              </div>
+              <div class="form-actions"><button type="submit" class="primary-btn">Создать пользователя</button></div>
+            </form>
+            <div id="adminUsersList" class="admin-users-list"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Админ</div>
+                <h2>Склады</h2>
+              </div>
+            </div>
+            <form id="adminCreateSiteForm" class="data-form">
+              <div class="form-grid">
+                <label class="form-span-2"><span>Компания</span><input name="organization_name" placeholder="Default Company" /></label>
+                <label><span>Название склада</span><input name="name" required /></label>
+                <label><span>Адрес</span><input name="address" /></label>
+              </div>
+              <div class="form-actions"><button type="submit" class="primary-btn">Создать склад</button></div>
+            </form>
           </div>
         </section>
       </main>
