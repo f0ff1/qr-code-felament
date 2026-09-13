@@ -268,9 +268,19 @@ func isWeakSecret(v string) bool {
 	return false
 }
 
-// loadDotEnv loads each file in order; later files overlay earlier ones for unset keys only
-// relative to process env — keys already in the OS environment always win.
+// loadDotEnv loads files in order. Later files override earlier ones.
+// Keys that already existed in the process environment before loading are never changed
+// (including empty values — use LookupEnv semantics via a pre-scan of Environ).
 func loadDotEnv(paths ...string) error {
+	preexisting := make(map[string]struct{})
+	for _, entry := range os.Environ() {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok || key == "" {
+			continue
+		}
+		preexisting[key] = struct{}{}
+	}
+
 	for _, path := range paths {
 		file, err := os.Open(path)
 		if err != nil {
@@ -291,11 +301,12 @@ func loadDotEnv(paths ...string) error {
 			if key == "" {
 				continue
 			}
-			if os.Getenv(key) == "" {
-				if err := os.Setenv(key, value); err != nil {
-					_ = file.Close()
-					return fmt.Errorf("set env %s: %w", key, err)
-				}
+			if _, locked := preexisting[key]; locked {
+				continue
+			}
+			if err := os.Setenv(key, value); err != nil {
+				_ = file.Close()
+				return fmt.Errorf("set env %s: %w", key, err)
 			}
 		}
 		scanErr := scanner.Err()

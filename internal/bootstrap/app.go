@@ -123,7 +123,7 @@ func NewApp(cfg config.Settings) (*App, error) {
 	notifierSvc := notificationusecase.NewServiceWithTTL(cfg.NotificationTTL)
 	bridge := notifyBridge{notifierSvc}
 
-	printerService := printerusecase.NewServiceWithSecrets(printerRepo, mock.Adapter{}, cloudAccountRepo, box)
+	printerService := printerusecase.NewServiceWithDeps(printerRepo, mock.Adapter{}, cloudAccountRepo, bambu.NewCloudClientAdapter(), box)
 	printJobService := printjobusecase.NewService(printJobRepo, spoolRepo, productRepo, printerRepo)
 	monitor := bambu.NewMonitorWithSecrets(printerRepo, printJobService, bridge, box, cfg.BambuMonitorInterval)
 

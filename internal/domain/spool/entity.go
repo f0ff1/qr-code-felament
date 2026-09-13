@@ -4,7 +4,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/skip2/go-qrcode"
 )
 
 type Material string
@@ -60,10 +59,6 @@ func GenerateQRToken() string {
 
 // LowWeightGrams is the threshold for StatusLow. Set once from config at process start.
 var LowWeightGrams = 200
-
-func GenerateQRPNG(token string) ([]byte, error) {
-	return qrcode.Encode(token, qrcode.Medium, 256)
-}
 
 func (s *Spool) EffectiveStatus(inUse bool) Status {
 	if inUse {

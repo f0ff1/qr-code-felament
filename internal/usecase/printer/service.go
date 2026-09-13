@@ -10,7 +10,6 @@ import (
 	cloudaccount "filamenttracker/internal/domain/cloudaccount"
 	printerdomain "filamenttracker/internal/domain/printer"
 	printjobdomain "filamenttracker/internal/domain/printjob"
-	"filamenttracker/internal/infrastructure/printer/bambu"
 	"filamenttracker/internal/infrastructure/secrets"
 
 	"github.com/google/uuid"
@@ -50,18 +49,35 @@ type Service struct {
 	repo     Repository
 	accounts CloudAccountRepository
 	adapter  printerdomain.Adapter
+	cloud    CloudClient
 	secrets  *secrets.Box
 }
 
 func NewService(repo Repository, adapter printerdomain.Adapter, accounts CloudAccountRepository) *Service {
-	return &Service{repo: repo, adapter: adapter, accounts: accounts, secrets: secrets.NewBoxFromEnv()}
+	return NewServiceWithDeps(repo, adapter, accounts, nil, secrets.NewBoxFromEnv())
 }
 
 func NewServiceWithSecrets(repo Repository, adapter printerdomain.Adapter, accounts CloudAccountRepository, box *secrets.Box) *Service {
+	return NewServiceWithDeps(repo, adapter, accounts, nil, box)
+}
+
+func NewServiceWithDeps(repo Repository, adapter printerdomain.Adapter, accounts CloudAccountRepository, cloud CloudClient, box *secrets.Box) *Service {
 	if box == nil {
 		box = secrets.NewBoxFromEnv()
 	}
-	return &Service{repo: repo, adapter: adapter, accounts: accounts, secrets: box}
+	return &Service{repo: repo, adapter: adapter, accounts: accounts, cloud: cloud, secrets: box}
+}
+
+func (s *Service) mustCloud() CloudClient {
+	if s.cloud == nil {
+		return noopCloudClient{}
+	}
+	return s.cloud
+}
+
+// SendEmailCode asks the cloud provider to email a login verification code.
+func (s *Service) SendEmailCode(email, region string) error {
+	return s.mustCloud().SendEmailCode(email, region)
 }
 
 func (s *Service) Create(ctx context.Context, input CreateInput) (printerdomain.Printer, error) {
@@ -76,10 +92,10 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (printerdomain.
 	}
 
 	p := printerdomain.NewPrinter(strings.TrimSpace(input.Name), strings.TrimSpace(input.Model))
-	applyConnection(&p, input)
+	s.applyConnection(&p, input)
 
 	if p.CloudEnabled {
-		if _, err := authenticateCloud(&p, input.CloudVerifyCode); err != nil {
+		if _, err := s.authenticateCloud(&p, input.CloudVerifyCode); err != nil {
 			return printerdomain.Printer{}, err
 		}
 		if err := s.sealPrinterCloudSecrets(&p); err != nil {
@@ -119,11 +135,11 @@ func (s *Service) UpdateLAN(ctx context.Context, id uuid.UUID, input CreateInput
 	if err := validateConnection(input); err != nil {
 		return printerdomain.Printer{}, err
 	}
-	applyConnection(&p, input)
+	s.applyConnection(&p, input)
 	p.UpdatedAt = time.Now()
 
 	if p.CloudEnabled && !p.CloudLinked() {
-		if _, err := authenticateCloud(&p, input.CloudVerifyCode); err != nil {
+		if _, err := s.authenticateCloud(&p, input.CloudVerifyCode); err != nil {
 			return printerdomain.Printer{}, err
 		}
 	}
@@ -149,13 +165,13 @@ type CloudSyncInput struct {
 
 type CloudSyncResult struct {
 	Printers    []printerdomain.Printer
-	Devices     []bambu.CloudDevice
+	Devices     []CloudDevice
 	NeedsVerify bool
 	Token       string
 }
 
 func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (CloudSyncResult, error) {
-	region := bambu.NormalizeCloudRegion(input.Region)
+	region := s.mustCloud().NormalizeRegion(input.Region)
 	token := strings.TrimSpace(input.Token)
 	email := strings.TrimSpace(input.Email)
 	password := strings.TrimSpace(input.Password)
@@ -171,13 +187,13 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			token = saved.Token
 		}
 		if strings.TrimSpace(input.Region) == "" {
-			region = bambu.NormalizeCloudRegion(saved.Region)
+			region = s.mustCloud().NormalizeRegion(saved.Region)
 		}
 	}
 
 	if token == "" {
 		if strings.TrimSpace(input.VerifyCode) != "" {
-			verified, err := bambu.CloudVerify(email, input.VerifyCode, region)
+			verified, err := s.mustCloud().Verify(email, input.VerifyCode, region)
 			if err != nil {
 				return CloudSyncResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 			}
@@ -186,7 +202,7 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			if email == "" || password == "" {
 				return CloudSyncResult{}, fmt.Errorf("%w: cloud email and password are required", domain.ErrInvalid)
 			}
-			login, err := bambu.CloudLogin(email, password, region)
+			login, err := s.mustCloud().Login(email, password, region)
 			if err != nil {
 				return CloudSyncResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 			}
@@ -199,14 +215,14 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 		}
 	}
 
-	devices, err := bambu.ListCloudDevices(token, region)
+	devices, err := s.mustCloud().ListDevices(token, region)
 	if err != nil {
-		// Token may be expired — retry with stored password once.
+		// Token may be expired вЂ” retry with stored password once.
 		if password != "" && email != "" {
-			login, loginErr := bambu.CloudLogin(email, password, region)
+			login, loginErr := s.mustCloud().Login(email, password, region)
 			if loginErr == nil && !login.NeedsVerify && login.Token != "" {
 				token = login.Token
-				devices, err = bambu.ListCloudDevices(token, region)
+				devices, err = s.mustCloud().ListDevices(token, region)
 			}
 		}
 		if err != nil {
@@ -264,7 +280,7 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			if device.AccessCode != "" {
 				p.LANAccessCode = device.AccessCode
 			}
-			p.Status = cloudDevicePrinterStatus(device)
+			p.Status = s.cloudDevicePrinterStatus(device)
 			p.UpdatedAt = time.Now()
 			if err := s.sealPrinterCloudSecrets(&p); err != nil {
 				return CloudSyncResult{}, err
@@ -284,7 +300,7 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 		p.CloudPassword = password
 		p.CloudToken = token
 		p.CloudRegion = region
-		p.Status = cloudDevicePrinterStatus(device)
+		p.Status = s.cloudDevicePrinterStatus(device)
 		if err := s.sealPrinterCloudSecrets(&p); err != nil {
 			return CloudSyncResult{}, err
 		}
@@ -381,7 +397,7 @@ func (s *Service) saveAccount(ctx context.Context, email, password, token, regio
 		if email != "" {
 			account.Email = email
 		}
-		account.Region = bambu.NormalizeCloudRegion(region)
+		account.Region = s.mustCloud().NormalizeRegion(region)
 		account.UpdatedAt = time.Now()
 	}
 	if password != "" {
@@ -451,11 +467,11 @@ func (s *Service) sealPrinterCloudSecrets(p *printerdomain.Printer) error {
 	return nil
 }
 
-func cloudDevicePrinterStatus(device bambu.CloudDevice) printerdomain.PrinterStatus {
+func (s *Service) cloudDevicePrinterStatus(device CloudDevice) printerdomain.PrinterStatus {
 	if !device.Online {
 		return printerdomain.StatusOffline
 	}
-	status, active := bambu.MapCloudPrintStatus(device.PrintStatus)
+	status, active := s.mustCloud().MapPrintStatus(device.PrintStatus)
 	if !active {
 		return printerdomain.StatusIdle
 	}
@@ -481,7 +497,7 @@ func (s *Service) VerifyCloud(ctx context.Context, id uuid.UUID, code string) (p
 	if !p.CloudEnabled {
 		return printerdomain.Printer{}, fmt.Errorf("%w: cloud is not enabled for this printer", domain.ErrInvalid)
 	}
-	token, err := bambu.CloudVerify(p.CloudEmail, code, p.CloudRegion)
+	token, err := s.mustCloud().Verify(p.CloudEmail, code, p.CloudRegion)
 	if err != nil {
 		return printerdomain.Printer{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 	}
@@ -552,7 +568,7 @@ func validateConnection(input CreateInput) error {
 	return nil
 }
 
-func applyConnection(p *printerdomain.Printer, input CreateInput) {
+func (s *Service) applyConnection(p *printerdomain.Printer, input CreateInput) {
 	p.LANHost = strings.TrimSpace(input.LANHost)
 	p.LANSerial = strings.TrimSpace(input.LANSerial)
 	p.LANAccessCode = strings.TrimSpace(input.LANAccessCode)
@@ -561,7 +577,7 @@ func applyConnection(p *printerdomain.Printer, input CreateInput) {
 	p.CloudEmail = strings.TrimSpace(input.CloudEmail)
 	p.CloudPassword = strings.TrimSpace(input.CloudPassword)
 	p.CloudToken = strings.TrimSpace(input.CloudToken)
-	p.CloudRegion = bambu.NormalizeCloudRegion(input.CloudRegion)
+	p.CloudRegion = s.mustCloud().NormalizeRegion(input.CloudRegion)
 	p.DefaultSpoolID = input.DefaultSpoolID
 	if !p.CloudEnabled {
 		p.CloudEmail = ""
@@ -578,21 +594,21 @@ func applyConnection(p *printerdomain.Printer, input CreateInput) {
 	}
 }
 
-func authenticateCloud(p *printerdomain.Printer, verifyCode string) (bambu.CloudLoginResult, error) {
+func (s *Service) authenticateCloud(p *printerdomain.Printer, verifyCode string) (CloudLoginResult, error) {
 	if strings.TrimSpace(p.CloudToken) != "" {
-		return bambu.CloudLoginResult{Token: p.CloudToken}, nil
+		return CloudLoginResult{Token: p.CloudToken}, nil
 	}
 	if strings.TrimSpace(verifyCode) != "" {
-		token, err := bambu.CloudVerify(p.CloudEmail, verifyCode, p.CloudRegion)
+		token, err := s.mustCloud().Verify(p.CloudEmail, verifyCode, p.CloudRegion)
 		if err != nil {
-			return bambu.CloudLoginResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
+			return CloudLoginResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 		}
 		p.CloudToken = token
-		return bambu.CloudLoginResult{Token: token}, nil
+		return CloudLoginResult{Token: token}, nil
 	}
-	result, err := bambu.CloudLogin(p.CloudEmail, p.CloudPassword, p.CloudRegion)
+	result, err := s.mustCloud().Login(p.CloudEmail, p.CloudPassword, p.CloudRegion)
 	if err != nil {
-		return bambu.CloudLoginResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
+		return CloudLoginResult{}, fmt.Errorf("%w: %v", domain.ErrInvalid, err)
 	}
 	if result.NeedsVerify {
 		return result, nil
