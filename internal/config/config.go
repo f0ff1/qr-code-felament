@@ -76,7 +76,7 @@ func Load() Settings {
 	s := Settings{
 		AppEnv:        env,
 		DatabaseURL:   getenv("DATABASE_URL", ""),
-		RedisAddr:     getenv("REDIS_ADDR", ""),
+		RedisAddr:     firstNonEmpty(getenv("REDIS_URL", ""), getenv("REDIS_PRIVATE_URL", ""), getenv("REDIS_ADDR", "")),
 		RedisPassword: getenv("REDIS_PASSWORD", ""),
 		RedisDB:       getenvInt("REDIS_DB", 0),
 		Port:          getenv("PORT", "8080"),

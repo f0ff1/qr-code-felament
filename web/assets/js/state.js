@@ -24,6 +24,12 @@ export const state = {
   activeSiteId: '',
   siteIds: [],
   sites: [],
+  adminUsersCache: [],
+  adminPasswordResets: [],
+  adminUsersQuery: '',
+  adminUsersRole: 'all',
+  adminUsersActive: 'all',
+  adminUsersPage: 0,
   config: {
     spool_low_weight_g: 200,
     printer_power_kw: 0.35,

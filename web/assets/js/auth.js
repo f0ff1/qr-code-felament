@@ -30,9 +30,14 @@ export function applySession(me) {
 
 export function updateAuthChrome() {
   const label = document.getElementById('authUserLabel');
+  const roleEl = document.getElementById('authUserRole');
   const logoutBtn = document.getElementById('logoutBtn');
   if (label) {
-    label.textContent = state.username ? `Вы вошли: ${state.username}` : '';
+    label.textContent = state.username || '—';
+  }
+  if (roleEl) {
+    const roleLabel = state.isAdmin ? 'Администратор' : (state.role || 'пользователь');
+    roleEl.textContent = state.authenticated ? roleLabel : '';
   }
   if (logoutBtn) {
     logoutBtn.classList.toggle('hidden', !state.authenticated);

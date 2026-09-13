@@ -30,6 +30,20 @@
       </form>
     </div>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <div id="credentialModal" class="credential-modal hidden" aria-hidden="true">
+      <div class="credential-card" role="dialog" aria-labelledby="credentialTitle">
+        <div class="brand-label">Доступ</div>
+        <h2 id="credentialTitle">Учётные данные</h2>
+        <p class="form-hint" id="credentialHint">Сохраните пароль сейчас — повторно его увидеть нельзя.</p>
+        <label><span>Логин</span><input id="credentialLogin" readonly /></label>
+        <label><span>Пароль</span><input id="credentialPassword" readonly /></label>
+        <div class="form-actions credential-actions">
+          <button type="button" id="credentialCopyBtn" class="primary-btn">Скопировать пароль</button>
+          <button type="button" id="credentialCloseBtn" class="mini-btn">Закрыть</button>
+        </div>
+        <div id="credentialCopyStatus" class="form-status"></div>
+      </div>
+    </div>
     <div class="page-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -39,10 +53,16 @@
             <strong>Tracker</strong>
           </div>
         </div>
-        <div class="sidebar-user">
-          <span id="authUserLabel" class="muted"></span>
-          <select id="activeSiteSelect" class="hidden" aria-label="Активный склад"></select>
-          <button type="button" id="logoutBtn" class="mini-btn hidden">Выйти</button>
+        <div class="sidebar-user" id="sidebarUserCard">
+          <div class="sidebar-user-meta">
+            <div class="sidebar-user-name" id="authUserLabel">—</div>
+            <div class="sidebar-user-role muted" id="authUserRole"></div>
+          </div>
+          <label class="sidebar-site-field hidden" id="activeSiteField" data-admin-only>
+            <span class="sidebar-site-label">Склад</span>
+            <select id="activeSiteSelect" aria-label="Активный склад"></select>
+          </label>
+          <button type="button" id="logoutBtn" class="sidebar-logout-btn hidden">Выйти</button>
         </div>
 
         <nav class="nav">
@@ -504,7 +524,24 @@
               </div>
               <div class="form-actions"><button type="submit" class="primary-btn">Создать пользователя</button></div>
             </form>
+
+            <div class="admin-users-toolbar">
+              <input id="adminUsersSearch" type="search" placeholder="Поиск: логин, имя, фамилия…" />
+              <select id="adminUsersRoleFilter" aria-label="Фильтр по роли">
+                <option value="all">Все роли</option>
+                <option value="admin">admin</option>
+                <option value="operator">operator</option>
+                <option value="viewer">viewer</option>
+              </select>
+              <select id="adminUsersActiveFilter" aria-label="Фильтр по статусу">
+                <option value="all">Все статусы</option>
+                <option value="active">Активные</option>
+                <option value="inactive">Отключённые</option>
+              </select>
+            </div>
+            <div id="adminResetsBox" class="admin-resets-box"></div>
             <div id="adminUsersList" class="admin-users-list"></div>
+            <div id="adminUsersPager" class="admin-users-pager"></div>
           </div>
           <div class="panel">
             <div class="panel-head compact">

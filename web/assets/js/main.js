@@ -30,7 +30,7 @@ import {
 import { ensureAuthenticated, submitLogin, logout, submitForgotPassword } from './auth.js';
 import { connectEvents, loadNotificationHistory } from './events.js';
 import { loadFilamentCatalog } from './data.js';
-import { bindAdminEvents, loadSitesForAdmin, renderAdminUsers } from './admin.js';
+import { bindAdminEvents, loadSitesForAdmin, refreshAdminUsersCache } from './admin.js';
 
 function bindEvents() {
   // Local UI tick: progress/status without hitting the network.
@@ -157,7 +157,7 @@ function bindEvents() {
       });
       if (view === 'admin') {
         loadSitesForAdmin();
-        renderAdminUsers();
+        refreshAdminUsersCache();
       }
     });
   });
@@ -204,7 +204,9 @@ function init() {
     loadFilamentCatalog();
     loadNotificationHistory();
     await loadSitesForAdmin();
-    await renderAdminUsers();
+    if (state.isAdmin) {
+      await refreshAdminUsersCache();
+    }
     loadData();
   });
 }
