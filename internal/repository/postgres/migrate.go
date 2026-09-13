@@ -113,18 +113,100 @@ func splitSQLStatements(body string) []string {
 		cleaned = append(cleaned, line)
 	}
 	joined := strings.Join(cleaned, "\n")
-	parts := strings.Split(joined, ";")
-	out := make([]string, 0, len(parts))
-	for _, part := range parts {
-		stmt := strings.TrimSpace(part)
-		if stmt == "" {
+
+	var out []string
+	var b strings.Builder
+	inDollar := false
+	dollarTag := ""
+	inSingle := false
+	inDouble := false
+	runes := []rune(joined)
+	for i := 0; i < len(runes); i++ {
+		ch := runes[i]
+		if inDollar {
+			b.WriteRune(ch)
+			tagRunes := []rune(dollarTag)
+			if i+len(tagRunes) <= len(runes) {
+				match := true
+				for j, tr := range tagRunes {
+					if runes[i+j] != tr {
+						match = false
+						break
+					}
+				}
+				if match {
+					for j := 1; j < len(tagRunes); j++ {
+						b.WriteRune(runes[i+j])
+					}
+					i += len(tagRunes) - 1
+					inDollar = false
+					dollarTag = ""
+				}
+			}
 			continue
 		}
+		if inSingle {
+			b.WriteRune(ch)
+			if ch == '\'' {
+				if i+1 < len(runes) && runes[i+1] == '\'' {
+					b.WriteRune(runes[i+1])
+					i++
+					continue
+				}
+				inSingle = false
+			}
+			continue
+		}
+		if inDouble {
+			b.WriteRune(ch)
+			if ch == '"' {
+				inDouble = false
+			}
+			continue
+		}
+		switch ch {
+		case '\'':
+			inSingle = true
+			b.WriteRune(ch)
+		case '"':
+			inDouble = true
+			b.WriteRune(ch)
+		case '$':
+			// dollar-quote: $tag$ ... $tag$
+			j := i + 1
+			for j < len(runes) && ((runes[j] >= 'a' && runes[j] <= 'z') || (runes[j] >= 'A' && runes[j] <= 'Z') || (runes[j] >= '0' && runes[j] <= '9') || runes[j] == '_') {
+				j++
+			}
+			if j < len(runes) && runes[j] == '$' {
+				dollarTag = string(runes[i : j+1])
+				inDollar = true
+				for k := i; k <= j; k++ {
+					b.WriteRune(runes[k])
+				}
+				i = j
+				continue
+			}
+			b.WriteRune(ch)
+		case ';':
+			stmt := strings.TrimSpace(b.String())
+			b.Reset()
+			if stmt == "" {
+				continue
+			}
+			upper := strings.ToUpper(stmt)
+			if upper == "BEGIN" || upper == "COMMIT" || upper == "ROLLBACK" {
+				continue
+			}
+			out = append(out, stmt)
+		default:
+			b.WriteRune(ch)
+		}
+	}
+	if stmt := strings.TrimSpace(b.String()); stmt != "" {
 		upper := strings.ToUpper(stmt)
-		if upper == "BEGIN" || upper == "COMMIT" || upper == "ROLLBACK" {
-			continue
+		if upper != "BEGIN" && upper != "COMMIT" && upper != "ROLLBACK" {
+			out = append(out, stmt)
 		}
-		out = append(out, stmt)
 	}
 	return out
 }
