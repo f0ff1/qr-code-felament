@@ -4,6 +4,10 @@ const state = {
   products: [],
   jobs: [],
   events: [],
+  serverEvents: [],
+  toastSessionShown: {},
+  localNotifyCooldown: {},
+  pendingAlertCount: 0,
   filter: 'all',
   query: '',
   jobRuntimeStarts: {},
@@ -26,6 +30,7 @@ const refs = {
   filterGroup: document.getElementById('filterGroup'),
   refreshButton: document.getElementById('refreshButton'),
   alertCount: document.getElementById('alertCount'),
+  clearAlertsBtn: document.getElementById('clearAlertsBtn'),
   exportButton: document.getElementById('exportButton'),
   navItems: [...document.querySelectorAll('.nav-item')],
   viewPanels: [...document.querySelectorAll('.view-panel')],
@@ -423,14 +428,6 @@ async function loadJobsFast() {
     if (!Array.isArray(jobs)) return;
     state.jobs = jobs.map(normalizeJob);
     refreshDerivedState();
-
-    for (const job of state.jobs) {
-      if (job.status === 'completed' && !state.completedNotified.has(job.id)) {
-        state.completedNotified.add(job.id);
-        notify(`Печать завершена: ${String(job.id).slice(0, 8)}`, 'success', 'Печать');
-      }
-    }
-
     renderSummary();
     renderOverview();
     renderPrinters();
@@ -487,7 +484,7 @@ function renderSummary() {
   refs.lowStockCount.textContent = String(lowCount);
   refs.activePrints.textContent = String(activeCount);
   refs.printerCount.textContent = String(state.printers.length);
-  refs.alertCount.textContent = `${lowCount} уведомлений`;
+  updatePendingAlertCount();
   updateClock();
 }
 
@@ -561,11 +558,12 @@ function renderOverview() {
         const product = state.products.find((item) => item.id === job.productId);
         const title = job.fileName || product?.name || job.product;
         const layerLabel = getJobLayerLabel(job);
+        const needsTopUp = jobNeedsFilamentTopUp(job);
         return `
           <div class="overview-item">
             <div>
               <strong>${title}</strong>
-              <span>${translateStatus(status)}${job.isDraft ? ' • нужна катушка' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
+              <span>${translateStatus(status)}${job.isDraft ? ' • нужна катушка' : ''}${needsTopUp ? ' • догрузить пластик' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
             </div>
             <div class="overview-meta">
               <span>${status === 'completed' ? '100%' : `${Math.round(progress)}%`}</span>
@@ -725,6 +723,7 @@ function renderJobs() {
       const effectiveStatus = getEffectiveJobStatus(job);
       const isCompleted = effectiveStatus === 'completed';
       const needsSpool = Boolean(job.isDraft);
+      const needsTopUp = !needsSpool && jobNeedsFilamentTopUp(job);
       const isPaused = job.status === 'paused' && !isCompleted;
       const actionLabel = isPaused ? 'Продолжить' : 'Приостановить';
       const progress = isCompleted ? 100 : Math.round(getJobProgress(job));
@@ -735,7 +734,7 @@ function renderJobs() {
         <div class="job-item">
           <div class="job-title">
             <strong>${title}</strong>
-            <span>Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}</span>
+            <span>Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}${needsTopUp ? ' • догрузить пластик' : ''}</span>
           </div>
           <div class="job-body">
             ${isCompleted ? '' : `
@@ -748,6 +747,7 @@ function renderJobs() {
           </div>
           <div class="card-actions">
             <span class="job-tag ${isCompleted ? 'completed' : effectiveStatus}">${translateStatus(isCompleted ? 'completed' : effectiveStatus)}</span>
+            ${needsTopUp ? '<span class="job-tag topup">догрузить пластик</span>' : ''}
             ${needsSpool ? `<span class="job-tag draft">катушка?</span><button class="mini-btn" data-confirm-draft-id="${job.id}">Привязать</button>` : ''}
             ${isCompleted || needsSpool ? '' : `<button class="mini-btn" data-job-toggle-id="${job.id}" data-job-toggle-action="${isPaused ? 'resume' : 'pause'}">${actionLabel}</button>`}
             <button class="mini-btn delete" data-delete-type="job" data-delete-id="${job.id}" aria-label="Удалить задачу" title="Удалить">×</button>
@@ -832,37 +832,126 @@ async function loadFilamentCatalog() {
   }
 }
 
-const TOAST_TTL_MS = 60 * 1000;
-const SEEN_TOASTS_KEY = 'filament.seenToasts';
+const TOAST_STORAGE_KEY = 'filament.toastState';
+const ONESHOT_EVENT_TYPES = new Set([
+  'print_completed',
+  'print_started',
+  'spool_created',
+  'printer_created',
+  'product_created',
+  'bambu_cloud_synced',
+  'bambu_cloud_logout',
+]);
+const REPEATABLE_EVENT_TYPES = new Set(['spool_low', 'spool_empty']);
 
-function loadSeenToasts() {
+function loadToastState() {
   try {
-    const raw = JSON.parse(localStorage.getItem(SEEN_TOASTS_KEY) || '{}');
-    const now = Date.now();
-    const fresh = {};
-    Object.entries(raw).forEach(([id, ts]) => {
-      if (now - Number(ts) < 24 * 60 * 60 * 1000) fresh[id] = Number(ts);
-    });
-    localStorage.setItem(SEEN_TOASTS_KEY, JSON.stringify(fresh));
-    return fresh;
+    const raw = JSON.parse(localStorage.getItem(TOAST_STORAGE_KEY) || '{}');
+    return {
+      seen: raw.seen && typeof raw.seen === 'object' ? raw.seen : {},
+      dismissed: raw.dismissed && typeof raw.dismissed === 'object' ? raw.dismissed : {},
+      sessionShown: state.toastSessionShown || {},
+    };
   } catch (_error) {
-    return {};
+    return { seen: {}, dismissed: {}, sessionShown: state.toastSessionShown || {} };
   }
 }
 
-function markToastSeen(id) {
-  const seen = loadSeenToasts();
-  seen[id] = Date.now();
-  localStorage.setItem(SEEN_TOASTS_KEY, JSON.stringify(seen));
+function saveToastState(partial) {
+  const current = loadToastState();
+  const next = {
+    seen: partial.seen || current.seen,
+    dismissed: partial.dismissed || current.dismissed,
+  };
+  localStorage.setItem(TOAST_STORAGE_KEY, JSON.stringify(next));
 }
 
-function shouldToastEvent(evt) {
-  if (!evt?.id) return false;
-  const seen = loadSeenToasts();
-  if (seen[evt.id]) return false;
-  const created = evt.created_at ? Date.parse(evt.created_at) : NaN;
-  if (!Number.isFinite(created)) return false;
-  return Date.now() - created <= TOAST_TTL_MS;
+function eventToastKey(evt) {
+  const type = String(evt?.type || '');
+  const spoolId = evt?.payload?.spool_id || evt?.spool_id || '';
+  if ((type === 'spool_low' || type === 'spool_empty') && spoolId) {
+    return `${type}:${spoolId}`;
+  }
+  if (type === 'print_completed' && (evt?.payload?.job_id || evt?.job_id)) {
+    return `print_completed:${evt.payload?.job_id || evt.job_id}`;
+  }
+  if (type === 'print_started' && (evt?.payload?.job_id || evt?.job_id)) {
+    return `print_started:${evt.payload?.job_id || evt.job_id}`;
+  }
+  return String(evt?.id || '');
+}
+
+function markToastSeen(evt) {
+  const stateToast = loadToastState();
+  const key = eventToastKey(evt);
+  if (!key) return;
+  stateToast.seen[key] = Date.now();
+  if (evt?.id) stateToast.seen[evt.id] = Date.now();
+  saveToastState(stateToast);
+  state.toastSessionShown = state.toastSessionShown || {};
+  state.toastSessionShown[key] = true;
+}
+
+function isToastDismissed(evt) {
+  const stateToast = loadToastState();
+  const key = eventToastKey(evt);
+  if (key && stateToast.dismissed[key]) return true;
+  if (evt?.id && stateToast.dismissed[evt.id]) return true;
+  return false;
+}
+
+function isToastAlreadySeen(evt) {
+  const stateToast = loadToastState();
+  const key = eventToastKey(evt);
+  if (key && stateToast.seen[key]) return true;
+  if (evt?.id && stateToast.seen[evt.id]) return true;
+  return false;
+}
+
+function wasShownThisSession(evt) {
+  const key = eventToastKey(evt);
+  return Boolean(key && state.toastSessionShown?.[key]);
+}
+
+function shouldToastEvent(evt, { fromHistory = false } = {}) {
+  if (!evt?.type) return false;
+  if (isToastDismissed(evt)) return false;
+
+  const type = String(evt.type);
+  if (ONESHOT_EVENT_TYPES.has(type)) {
+    if (isToastAlreadySeen(evt)) return false;
+    const cool = state.localNotifyCooldown?.[type];
+    if (cool && Date.now() - cool < 8000) return false;
+    return true;
+  }
+  if (REPEATABLE_EVENT_TYPES.has(type)) {
+    if (wasShownThisSession(evt)) return false;
+    return true;
+  }
+  return false;
+}
+
+function clearAlertToasts() {
+  const stateToast = loadToastState();
+  const now = Date.now();
+  const dismiss = { ...stateToast.dismissed };
+
+  (state.serverEvents || []).forEach((evt) => {
+    const key = eventToastKey(evt);
+    if (key) dismiss[key] = now;
+    if (evt.id) dismiss[evt.id] = now;
+  });
+  (state.events || []).forEach((evt) => {
+    if (evt.id) dismiss[evt.id] = now;
+  });
+
+  saveToastState({ seen: stateToast.seen, dismissed: dismiss });
+  state.toastSessionShown = {};
+  state.events = [];
+  state.pendingAlertCount = 0;
+  renderActivity();
+  renderSummary();
+  showToast('Уведомления очищены', 'info', 'Система');
 }
 
 function formatEventTime(iso) {
@@ -876,11 +965,42 @@ function formatEventTime(iso) {
   return new Date(ts).toLocaleString();
 }
 
+function jobNeedsFilamentTopUp(job) {
+  if (!job || !isActiveJobStatus(job.status)) return false;
+  if (!job.spoolId) return false;
+  const spool = state.spools.find((item) => String(item.id) === String(job.spoolId));
+  if (!spool) return false;
+
+  const stillNeeded = Math.ceil(getJobRemainingEstimate(job) * (1 - getJobPrintProgressPercent(job) / 100));
+  if (stillNeeded <= 0) return false;
+
+  const current = getSpoolCurrentDisplay(spool);
+  if (Number(spool.remaining ?? 0) <= 0 && stillNeeded > 0) return true;
+  if (stillNeeded > current + 1) return true;
+
+  const totalStillNeeded = state.jobs.reduce((sum, item) => {
+    if (!jobReservesSpool(item, spool.id)) return sum;
+    const need = Math.ceil(getJobRemainingEstimate(item) * (1 - getJobPrintProgressPercent(item) / 100));
+    return sum + Math.max(0, need);
+  }, 0);
+  return totalStillNeeded > current + 1;
+}
+
 async function loadNotificationHistory() {
   try {
     const items = await fetchJSON('/api/notifications');
     if (!Array.isArray(items)) return;
-    state.events = items.slice(0, 12).map((evt) => {
+    state.serverEvents = items.map((evt) => ({
+      id: evt.id,
+      type: evt.type,
+      message: evt.message,
+      created_at: evt.created_at,
+      payload: evt.payload || {},
+      spool_id: evt.payload?.spool_id,
+      job_id: evt.payload?.job_id,
+    }));
+
+    state.events = state.serverEvents.slice(0, 12).map((evt) => {
       const mapped = mapServerEvent(String(evt.type || 'info'), evt.message || 'Событие');
       return {
         id: evt.id,
@@ -890,19 +1010,52 @@ async function loadNotificationHistory() {
       };
     });
     renderActivity();
+
+    // Страница была закрыта — догоняем непросмотренные уведомления.
+    state.serverEvents.forEach((evt) => {
+      if (!shouldToastEvent(evt, { fromHistory: true })) return;
+      const mapped = mapServerEvent(String(evt.type || 'info'), evt.message || 'Событие');
+      markToastSeen(evt);
+      showToast(mapped.message, mapped.level, mapped.title);
+    });
+    updatePendingAlertCount();
   } catch (_error) {
     // history optional
+  }
+}
+
+function updatePendingAlertCount() {
+  const undismissed = (state.serverEvents || []).filter((evt) => !isToastDismissed(evt));
+  state.pendingAlertCount = undismissed.length;
+  if (refs.alertCount) {
+    refs.alertCount.textContent = `${state.pendingAlertCount} уведомлений`;
   }
 }
 
 function handleServerEvent(data, { allowToast = true } = {}) {
   const type = String(data.type || 'info');
   const mapped = mapServerEvent(type, data.message || 'Получено событие');
-  appendActivity(mapped.message, mapped.level, data.id, data.created_at);
-  if (allowToast && (type === 'spool_low' || type === 'print_completed') && shouldToastEvent(data)) {
-    markToastSeen(data.id);
+  const evt = {
+    id: data.id,
+    type,
+    message: data.message,
+    created_at: data.created_at || new Date().toISOString(),
+    payload: data.payload || {},
+    spool_id: data.payload?.spool_id || data.spool_id,
+    job_id: data.payload?.job_id || data.job_id,
+  };
+
+  state.serverEvents = [evt, ...(state.serverEvents || []).filter((item) => item.id !== evt.id)].slice(0, 50);
+  appendActivity(mapped.message, mapped.level, data.id, evt.created_at);
+
+  if (allowToast && shouldToastEvent(evt, { fromHistory: false })) {
+    markToastSeen(evt);
     showToast(mapped.message, mapped.level, mapped.title);
+  } else if (ONESHOT_EVENT_TYPES.has(type)) {
+    // Уже показали локально при действии пользователя — фиксируем, чтобы не повторить.
+    markToastSeen(evt);
   }
+  updatePendingAlertCount();
 }
 
 function calculateProductCost(form) {
@@ -991,9 +1144,13 @@ function showToast(message, type = 'info', title = '') {
   window.setTimeout(remove, 4200);
 }
 
-function notify(message, type = 'info', title = '') {
+function notify(message, type = 'info', title = '', eventType = '') {
   appendActivity(message, type);
   showToast(message, type, title);
+  if (eventType) {
+    state.localNotifyCooldown = state.localNotifyCooldown || {};
+    state.localNotifyCooldown[eventType] = Date.now();
+  }
 }
 
 function appendActivity(message, type = 'info', id = '', createdAt = '') {
@@ -1063,11 +1220,17 @@ function mapServerEvent(type, message) {
   if (type === 'printer_created') {
     return { title: 'Принтеры', message: 'Добавлен новый принтер', level: 'success' };
   }
+  if (type === 'product_created') {
+    return { title: 'Продукты', message: 'Добавлен новый продукт', level: 'success' };
+  }
   if (type === 'print_started') {
     return { title: 'Печать', message: 'Запущена новая задача печати', level: 'success' };
   }
   if (type === 'spool_low') {
-    return { title: 'Склад', message: message || 'Мало филамента', level: 'warning' };
+    return { title: 'Склад', message: message || 'Мало пластика', level: 'warning' };
+  }
+  if (type === 'spool_empty') {
+    return { title: 'Склад', message: message || 'Пластик закончился', level: 'error' };
   }
   if (type === 'print_completed') {
     return { title: 'Печать', message: 'Задача печати завершена', level: 'success' };
@@ -1110,7 +1273,7 @@ async function createSpool(event) {
       body: JSON.stringify(payload),
     });
     if (refs.spoolFormStatus) refs.spoolFormStatus.innerHTML = '';
-    notify(`Катушка ${result.qr_token} добавлена на склад`, 'success', 'Склад');
+    notify(`Катушка ${result.qr_token} добавлена на склад`, 'success', 'Склад', 'spool_created');
     form.reset();
     await loadData();
   } catch (error) {
@@ -1281,7 +1444,7 @@ async function createPrinter(event) {
       body: JSON.stringify(payload),
     });
     if (refs.printerFormStatus) refs.printerFormStatus.textContent = '';
-    notify(`Принтер «${form.name.value}» добавлен`, 'success', 'Принтеры');
+    notify(`Принтер «${form.name.value}» добавлен`, 'success', 'Принтеры', 'printer_created');
     form.reset();
     if (form.connectionMode) form.connectionMode.value = 'none';
     syncPrinterConnectionFields();
@@ -1342,7 +1505,7 @@ async function createProduct(event) {
       }),
     });
     if (refs.productFormStatus) refs.productFormStatus.textContent = '';
-    notify(`Продукт «${result.name}» добавлен`, 'success', 'Продукты');
+    notify(`Продукт «${result.name}» добавлен`, 'success', 'Продукты', 'product_created');
     form.reset();
     const personToggle = form.querySelector('.billing-toggle[value="person"]');
     if (personToggle) personToggle.checked = true;
@@ -1380,7 +1543,7 @@ async function createPrintJob(event) {
     });
     state.jobRuntimeStarts[result.id] = Date.now();
     if (refs.jobFormStatus) refs.jobFormStatus.textContent = '';
-    notify('Задача печати запущена', 'success', 'Печать');
+    notify('Задача печати запущена', 'success', 'Печать', 'print_started');
     form.reset();
     await loadData();
   } catch (error) {
@@ -1477,14 +1640,14 @@ async function confirmDraftJob(jobId) {
 function bindEvents() {
   // Local UI tick: progress/status without hitting the network.
   setInterval(() => {
-    const completed = refreshDerivedState();
-    if (completed) {
-      for (const job of state.jobs) {
-        if (job.status === 'completed' && !state.completedNotified.has(job.id)) {
-          state.completedNotified.add(job.id);
-          notify(`Печать завершена: ${String(job.id).slice(0, 8)}`, 'success', 'Печать');
-        }
-      }
+    refreshDerivedState();
+    // Завершение Bambu приходит с сервера один раз. Локальный ETA — только для ручных задач.
+    for (const job of state.jobs) {
+      if (job.source === 'bambu') continue;
+      if (job.status !== 'completed' || state.completedNotified.has(job.id)) continue;
+      state.completedNotified.add(job.id);
+      notify(`Печать завершена: ${String(job.id).slice(0, 8)}`, 'success', 'Печать', 'print_completed');
+      markToastSeen({ id: job.id, type: 'print_completed', payload: { job_id: job.id } });
     }
     renderSummary();
     renderOverview();
@@ -1610,6 +1773,10 @@ function bindEvents() {
   syncPrinterConnectionFields();
   refs.productForm.addEventListener('submit', createProduct);
   refs.jobForm.addEventListener('submit', createPrintJob);
+  refs.clearAlertsBtn?.addEventListener('click', (event) => {
+    event.preventDefault();
+    clearAlertToasts();
+  });
 }
 
 function init() {

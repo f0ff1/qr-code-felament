@@ -1,6 +1,7 @@
 package http
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"time"
@@ -42,5 +43,17 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 }
 
 func toJSON(evt notificationusecase.Event) string {
-	return fmt.Sprintf("{\"id\":\"%s\",\"type\":\"%s\",\"message\":\"%s\",\"created_at\":\"%s\"}", evt.ID, evt.Type, evt.Message, evt.CreatedAt.Format(time.RFC3339))
+	payload, _ := json.Marshal(evt.Payload)
+	if len(payload) == 0 {
+		payload = []byte("{}")
+	}
+	msg, _ := json.Marshal(evt.Message)
+	return fmt.Sprintf(
+		`{"id":%q,"type":%q,"message":%s,"created_at":%q,"payload":%s}`,
+		evt.ID,
+		evt.Type,
+		string(msg),
+		evt.CreatedAt.Format(time.RFC3339),
+		string(payload),
+	)
 }

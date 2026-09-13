@@ -205,6 +205,36 @@ p {
   color: var(--text);
 }
 
+.alerts-row {
+  justify-content: flex-start;
+}
+
+.alerts-row #alertCount {
+  flex: 1;
+}
+
+.alerts-clear {
+  margin-left: auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  font-size: 1.1rem;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+.alerts-clear:hover {
+  color: var(--text-strong);
+  background: rgba(240, 246, 252, 0.08);
+}
+
+.job-tag.topup {
+  background: rgba(210, 153, 34, 0.18);
+  color: #e3b341;
+}
+
 .status-dot {
   display: inline-block;
   width: 10px;

@@ -19,6 +19,7 @@ func TestSchedulerScanPublishesLowSpoolNotification(t *testing.T) {
 
 	spoolEntity := spooldomain.NewSpool(spooldomain.MaterialPLA, "Black", "eSUN", 100, 30)
 	spoolEntity.CurrentWeight = 10
+	spoolEntity.Status = spooldomain.StatusAvailable
 	if err := spoolRepo.Create(context.Background(), spoolEntity); err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
@@ -33,9 +34,15 @@ func TestSchedulerScanPublishesLowSpoolNotification(t *testing.T) {
 	if events[0].Type != "spool_low" {
 		t.Fatalf("event type = %s, want spool_low", events[0].Type)
 	}
+
+	// Second scan must not repeat the same low warning.
+	scheduler.Scan(context.Background())
+	if got := len(notifier.List()); got != 1 {
+		t.Fatalf("after second scan len(events) = %d, want 1", got)
+	}
 }
 
-func TestSchedulerScanPublishesPrintCompletedNotification(t *testing.T) {
+func TestSchedulerScanDoesNotSpamCompletedPrints(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 	notifier := notificationusecase.NewService()
 
@@ -49,15 +56,8 @@ func TestSchedulerScanPublishesPrintCompletedNotification(t *testing.T) {
 	scheduler := NewSchedulerWithDeps(nil, printJobRepo, notifier)
 	scheduler.Scan(context.Background())
 
-	events := notifier.List()
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
-	}
-	if events[0].Type != "print_completed" {
-		t.Fatalf("event type = %s, want print_completed", events[0].Type)
-	}
-	if events[0].Payload["job_id"] == nil {
-		t.Fatal("print_completed payload missing job_id")
+	if got := len(notifier.List()); got != 0 {
+		t.Fatalf("completed jobs must not be re-notified by scanner, got %d", got)
 	}
 }
 

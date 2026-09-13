@@ -27,24 +27,30 @@ type notifier interface {
 }
 
 type Scheduler struct {
-	spoolRepo spoolRepository
-	jobRepo   printJobRepository
-	notifier  notifier
-	tick      time.Duration
+	spoolRepo    spoolRepository
+	jobRepo      printJobRepository
+	notifier     notifier
+	tick         time.Duration
+	lowAlerted   map[string]bool
+	emptyAlerted map[string]bool
 }
 
 func NewScheduler() *Scheduler {
 	return &Scheduler{
-		tick: 10 * time.Second,
+		tick:         10 * time.Second,
+		lowAlerted:   make(map[string]bool),
+		emptyAlerted: make(map[string]bool),
 	}
 }
 
 func NewSchedulerWithDeps(spoolRepo spoolRepository, jobRepo printJobRepository, notifier notifier) *Scheduler {
 	return &Scheduler{
-		spoolRepo: spoolRepo,
-		jobRepo:   jobRepo,
-		notifier:  notifier,
-		tick:      10 * time.Second,
+		spoolRepo:    spoolRepo,
+		jobRepo:      jobRepo,
+		notifier:     notifier,
+		tick:         10 * time.Second,
+		lowAlerted:   make(map[string]bool),
+		emptyAlerted: make(map[string]bool),
 	}
 }
 
@@ -107,6 +113,7 @@ func (s *Scheduler) syncRuntimeState(ctx context.Context) {
 						spool.UpdatedAt = time.Now()
 						_ = s.spoolRepo.Update(ctx, spool)
 					}
+					s.checkSpoolWeightAlerts(spool)
 					continue
 				}
 
@@ -121,9 +128,13 @@ func (s *Scheduler) syncRuntimeState(ctx context.Context) {
 				}
 
 				if spool.Status != nextStatus {
+					prev := spool.Status
 					spool.Status = nextStatus
 					spool.UpdatedAt = time.Now()
 					_ = s.spoolRepo.Update(ctx, spool)
+					s.notifySpoolStatusChange(spool, prev, nextStatus)
+				} else {
+					s.checkSpoolWeightAlerts(spool)
 				}
 			}
 		}
@@ -132,31 +143,70 @@ func (s *Scheduler) syncRuntimeState(ctx context.Context) {
 
 func (s *Scheduler) Scan(ctx context.Context) {
 	s.syncRuntimeState(ctx)
+}
 
-	if s.spoolRepo != nil {
-		spools, err := s.spoolRepo.List(ctx)
-		if err == nil {
-			for _, spool := range spools {
-				if spool.CurrentWeight <= 50 && spool.Status != spooldomain.StatusEmpty {
-					if s.notifier != nil {
-						s.notifier.Publish("spool_low", fmt.Sprintf("Spool %s is running low", spool.ID), map[string]any{"spool_id": spool.ID.String(), "current_weight": spool.CurrentWeight})
-					}
-				}
-			}
-		}
+func (s *Scheduler) notifySpoolStatusChange(spool spooldomain.Spool, prev, next spooldomain.Status) {
+	if s.notifier == nil {
+		return
 	}
-
-	if s.jobRepo != nil {
-		jobs, err := s.jobRepo.List(ctx)
-		if err == nil {
-			for _, job := range jobs {
-				if job.Status == printjobdomain.StatusCompleted {
-					if s.notifier != nil {
-						s.notifier.Publish("print_completed", "Print job completed", map[string]any{"job_id": job.ID.String(), "printer_id": job.PrinterID.String()})
-					}
-				}
-			}
+	label := fmt.Sprintf("%s / %s", spool.Material, spool.Color)
+	switch next {
+	case spooldomain.StatusLow:
+		s.publishSpoolLow(spool, label)
+	case spooldomain.StatusEmpty:
+		s.publishSpoolEmpty(spool, label)
+	case spooldomain.StatusAvailable, spooldomain.StatusInUse:
+		if spool.CurrentWeight >= 200 {
+			delete(s.lowAlerted, spool.ID.String())
 		}
+		if spool.CurrentWeight > 0 {
+			delete(s.emptyAlerted, spool.ID.String())
+		}
+		_ = prev
+	}
+}
+
+func (s *Scheduler) publishSpoolLow(spool spooldomain.Spool, label string) {
+	id := spool.ID.String()
+	if s.lowAlerted[id] {
+		return
+	}
+	s.lowAlerted[id] = true
+	s.notifier.Publish("spool_low", fmt.Sprintf("Катушка %s заканчивается (%d г)", label, spool.CurrentWeight), map[string]any{
+		"spool_id":       id,
+		"current_weight": spool.CurrentWeight,
+		"material":       string(spool.Material),
+		"color":          spool.Color,
+	})
+}
+
+func (s *Scheduler) publishSpoolEmpty(spool spooldomain.Spool, label string) {
+	id := spool.ID.String()
+	if s.emptyAlerted[id] {
+		return
+	}
+	s.emptyAlerted[id] = true
+	s.notifier.Publish("spool_empty", fmt.Sprintf("Катушка %s закончилась", label), map[string]any{
+		"spool_id": id,
+		"material": string(spool.Material),
+		"color":    spool.Color,
+	})
+}
+
+func (s *Scheduler) checkSpoolWeightAlerts(spool spooldomain.Spool) {
+	if s.notifier == nil {
+		return
+	}
+	label := fmt.Sprintf("%s / %s", spool.Material, spool.Color)
+	id := spool.ID.String()
+	switch {
+	case spool.CurrentWeight <= 0:
+		s.publishSpoolEmpty(spool, label)
+	case spool.CurrentWeight < 200:
+		s.publishSpoolLow(spool, label)
+	default:
+		delete(s.lowAlerted, id)
+		delete(s.emptyAlerted, id)
 	}
 }
 

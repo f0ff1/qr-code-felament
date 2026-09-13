@@ -1178,6 +1178,7 @@ func NewRouter() http.Handler {
 				"type":       evt.Type,
 				"message":    evt.Message,
 				"created_at": evt.CreatedAt.UTC().Format(time.RFC3339),
+				"payload":    evt.Payload,
 			})
 		}
 		w.Header().Set("Content-Type", "application/json")
