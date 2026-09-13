@@ -79,20 +79,19 @@ func (s *Service) Start(ctx context.Context, printerID, productID, spoolID uuid.
 	if err != nil {
 		return printjobdomain.PrintJob{}, err
 	}
-	if productEntity.EstimatedWeight > spoolEntity.CurrentWeight {
-		return printjobdomain.PrintJob{}, fmt.Errorf("%w: insufficient filament for product", domain.ErrInvalid)
-	}
 
-	if err := s.reserveFilament(ctx, &spoolEntity, productEntity.EstimatedWeight); err != nil {
+	need := productEntity.EstimatedWeight
+	reserved, err := s.reserveAvailable(ctx, &spoolEntity, need)
+	if err != nil {
 		return printjobdomain.PrintJob{}, err
 	}
 
-	job := printjobdomain.NewPrintJob(printerEntity.ID, productEntity.ID, spoolEntity.ID, productEntity.EstimatedWeight)
+	job := printjobdomain.NewPrintJob(printerEntity.ID, productEntity.ID, spoolEntity.ID, need)
 	job.Start()
-	job.ConsumedWeight = productEntity.EstimatedWeight
+	job.ConsumedWeight = reserved
 	job.FileName = productEntity.Name
 	if err := s.repo.Create(ctx, job); err != nil {
-		_ = s.refundFilament(ctx, spoolEntity.ID, productEntity.EstimatedWeight)
+		_ = s.refundFilament(ctx, spoolEntity.ID, reserved)
 		return printjobdomain.PrintJob{}, err
 	}
 	return job, nil
@@ -275,16 +274,22 @@ func (s *Service) applyJobWeight(ctx context.Context, job *printjobdomain.PrintJ
 		if err != nil {
 			return false, err
 		}
-		if err := s.reserveFilament(ctx, &spoolEntity, delta); err != nil {
+		got, err := s.reserveAvailable(ctx, &spoolEntity, delta)
+		if err != nil {
 			return false, err
+		}
+		if got > 0 {
+			job.ConsumedWeight += got
+			changed = true
 		}
 	} else {
 		if err := s.refundFilament(ctx, job.SpoolID, -delta); err != nil {
 			return false, err
 		}
+		job.ConsumedWeight = newWeight
+		changed = true
 	}
-	job.ConsumedWeight = newWeight
-	return true, nil
+	return changed, nil
 }
 
 func absInt(v int) int {
@@ -370,10 +375,11 @@ func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Pri
 		if err != nil {
 			return printjobdomain.PrintJob{}, err
 		}
-		if err := s.reserveFilament(ctx, &spoolEntity, estimated); err != nil {
+		reserved, err := s.reserveAvailable(ctx, &spoolEntity, estimated)
+		if err != nil {
 			return printjobdomain.PrintJob{}, err
 		}
-		job.ConsumedWeight = estimated
+		job.ConsumedWeight = reserved
 	}
 
 	if err := s.repo.Create(ctx, job); err != nil {
@@ -584,15 +590,18 @@ func (s *Service) ensureDraftLinked(ctx context.Context, job *printjobdomain.Pri
 	job.IsDraft = false
 	changed = true
 
-	if job.ConsumedWeight == 0 {
+	if job.ConsumedWeight < weight {
 		spoolEntity, err := s.spoolRepo.GetByID(ctx, spoolID)
 		if err != nil {
 			return false, err
 		}
-		if err := s.reserveFilament(ctx, &spoolEntity, weight); err != nil {
+		need := weight - job.ConsumedWeight
+		got, err := s.reserveAvailable(ctx, &spoolEntity, need)
+		if err != nil {
 			return false, err
 		}
-		job.ConsumedWeight = weight
+		job.ConsumedWeight += got
+		changed = true
 	}
 	return changed, nil
 }
@@ -621,25 +630,23 @@ func (s *Service) ConfirmDraft(ctx context.Context, jobID, productID, spoolID uu
 	if weight <= 0 {
 		weight = 50
 	}
-	if weight > spoolEntity.CurrentWeight {
-		return printjobdomain.PrintJob{}, fmt.Errorf("%w: insufficient filament", domain.ErrInvalid)
-	}
 
-	if err := s.reserveFilament(ctx, &spoolEntity, weight); err != nil {
+	reserved, err := s.reserveAvailable(ctx, &spoolEntity, weight)
+	if err != nil {
 		return printjobdomain.PrintJob{}, err
 	}
 
 	job.ProductID = productID
 	job.SpoolID = spoolID
 	job.EstimatedWeight = weight
-	job.ConsumedWeight = weight
+	job.ConsumedWeight = reserved
 	job.IsDraft = false
 	if job.Status == printjobdomain.StatusDraft {
 		job.Status = printjobdomain.StatusPrinting
 	}
 	job.UpdatedAt = time.Now()
 	if err := s.repo.Update(ctx, job); err != nil {
-		_ = s.refundFilament(ctx, spoolID, weight)
+		_ = s.refundFilament(ctx, spoolID, reserved)
 		return printjobdomain.PrintJob{}, err
 	}
 	return job, nil
@@ -939,7 +946,11 @@ func unusedReservedGrams(job printjobdomain.PrintJob) int {
 	if progress > 100 {
 		progress = 100
 	}
-	used := int(math.Round(float64(reserved) * progress / 100.0))
+	planned := job.EstimatedWeight
+	if planned <= 0 {
+		planned = reserved
+	}
+	used := int(math.Round(float64(planned) * progress / 100.0))
 	if used < 0 {
 		used = 0
 	}
@@ -958,6 +969,34 @@ func (s *Service) reserveFilament(ctx context.Context, spool *spooldomain.Spool,
 	}
 	spool.Consume(weight)
 	return s.spoolRepo.Update(ctx, *spool)
+}
+
+// reserveAvailable reserves up to want grams; returns how much was actually reserved.
+func (s *Service) reserveAvailable(ctx context.Context, spool *spooldomain.Spool, want int) (int, error) {
+	if want <= 0 {
+		return 0, nil
+	}
+	got := want
+	if spool.CurrentWeight < got {
+		got = spool.CurrentWeight
+	}
+	if got <= 0 {
+		return 0, nil
+	}
+	if err := s.reserveFilament(ctx, spool, got); err != nil {
+		return 0, err
+	}
+	return got, nil
+}
+
+func NeedsFilamentTopUp(job printjobdomain.PrintJob) bool {
+	if job.IsDraft || isTerminal(job.Status) {
+		return false
+	}
+	if !printjobdomain.IsActive(job.Status) {
+		return false
+	}
+	return job.EstimatedWeight > 0 && job.ConsumedWeight < job.EstimatedWeight
 }
 
 func (s *Service) refundFilament(ctx context.Context, spoolID uuid.UUID, weight int) error {

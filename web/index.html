@@ -171,7 +171,7 @@
                     <th>Остаток на д.н.</th>
                     <th>Остаток в буд.</th>
                     <th>QR</th>
-                    <th>Статус</th>
+                    <th class="status-col">Статус</th>
                   </tr>
                 </thead>
                 <tbody id="spoolTableBody"></tbody>
@@ -267,12 +267,12 @@
                   <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
                 </label>
                 <p class="form-hint form-span-2">
-                  После «Войти» Bambu пришлёт код на почту. Введите его и нажмите «Войти» ещё раз.
+                  Нажмите «Отправить код» — Bambu пришлёт код на почту. Введите его, затем нажмите «Войти в Bambu Lab».
                   Если письма нет — проверьте «Спам» и «Отправить код ещё раз».
                 </p>
                 <div class="form-actions form-span-2">
-                  <button type="submit" class="primary-btn">Войти в Bambu Lab</button>
-                  <button type="button" id="cloudResendCodeBtn" class="mini-btn">Отправить код ещё раз</button>
+                  <button type="submit" id="cloudLoginBtn" class="primary-btn">Отправить код</button>
+                  <button type="button" id="cloudResendCodeBtn" class="mini-btn hidden">Отправить код ещё раз</button>
                 </div>
               </div>
               <div id="cloudSyncStatus" class="form-status"></div>
@@ -341,6 +341,7 @@
               </div>
             </div>
             <div id="productList" class="product-list"></div>
+            <div id="productPager" class="product-pager hidden" aria-label="Страницы продуктов"></div>
 
             <form id="productForm" class="data-form">
               <div class="form-header">

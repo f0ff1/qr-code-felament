@@ -386,7 +386,31 @@ p {
 
 .product-list {
   display: grid;
-  gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  align-items: stretch;
+}
+
+.product-list.product-carousel {
+  display: block;
+  overflow: hidden;
+  border-radius: 14px;
+}
+
+.product-carousel-track {
+  display: flex;
+  transition: transform 0.45s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: transform;
+}
+
+.product-page {
+  flex: 0 0 100%;
+  min-width: 100%;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  padding: 2px;
+  box-sizing: border-box;
 }
 
 .product-card {
@@ -394,6 +418,52 @@ p {
   border: 1px solid var(--border);
   border-radius: 12px;
   background: rgba(13, 17, 23, 0.48);
+  min-height: 140px;
+  display: flex;
+  flex-direction: column;
+}
+
+.product-pager {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 14px;
+}
+
+.product-pager.hidden {
+  display: none;
+}
+
+.product-page-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  border: 0;
+  padding: 0;
+  background: rgba(148, 163, 184, 0.35);
+  cursor: pointer;
+  transition: width 0.25s ease, background 0.25s ease;
+}
+
+.product-page-dot.active {
+  width: 22px;
+  background: var(--blue);
+}
+
+.product-page-btn {
+  border: 1px solid var(--border);
+  background: rgba(13, 17, 23, 0.7);
+  color: var(--text-strong);
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.product-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 .billing-block,
@@ -984,7 +1054,43 @@ h1 {
 }
 
 .row-actions {
-  justify-content: flex-end;
+  justify-content: flex-start;
+}
+
+.inventory-table th.status-col,
+.inventory-table td.status-cell {
+  width: 1%;
+  white-space: nowrap;
+}
+
+.job-flag {
+  display: inline-flex;
+  align-items: center;
+  margin-top: 6px;
+  padding: 3px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.job-flag.top-up {
+  background: rgba(245, 158, 11, 0.18);
+  color: #fbbf24;
+  box-shadow: 0 0 0 1px rgba(245, 158, 11, 0.35);
+}
+
+.job-flag.needs-spool {
+  background: rgba(88, 166, 255, 0.14);
+  color: var(--blue);
+  box-shadow: 0 0 0 1px rgba(88, 166, 255, 0.3);
+}
+
+.primary-btn:disabled,
+.primary-btn.is-waiting {
+  opacity: 0.55;
+  cursor: not-allowed;
+  filter: grayscale(0.35);
 }
 
 .mini-btn {

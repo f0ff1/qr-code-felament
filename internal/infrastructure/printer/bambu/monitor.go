@@ -413,6 +413,14 @@ func (m *Monitor) applySnapshot(ctx context.Context, p printerdomain.Printer, sn
 				"file_name":  job.FileName,
 				"is_draft":   job.IsDraft,
 			})
+			if printjobusecase.NeedsFilamentTopUp(job) {
+				m.notifier.Publish("filament_short", fmt.Sprintf("На катушке не хватает пластика для «%s» — догрузите во время печати", job.FileName), map[string]any{
+					"job_id":            job.ID.String(),
+					"printer_id":        p.ID.String(),
+					"estimated_weight":  job.EstimatedWeight,
+					"consumed_weight":   job.ConsumedWeight,
+				})
+			}
 		} else if job.Status == printjobdomain.StatusCompleted {
 			m.notifier.Publish("print_completed", "Печать завершена", map[string]any{
 				"job_id":     job.ID.String(),

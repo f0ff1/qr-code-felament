@@ -14,6 +14,8 @@ const state = {
   loading: false,
   lastFullSyncAt: 0,
   completedNotified: new Set(),
+  bambuCodeSent: false,
+  productPage: 0,
 };
 
 const refs = {
@@ -49,7 +51,9 @@ const refs = {
   cloudSyncOnlyBtn: document.getElementById('cloudSyncOnlyBtn'),
   cloudLogoutBtn: document.getElementById('cloudLogoutBtn'),
   cloudResendCodeBtn: document.getElementById('cloudResendCodeBtn'),
+  cloudLoginBtn: document.getElementById('cloudLoginBtn'),
   productForm: document.getElementById('productForm'),
+  productPager: document.getElementById('productPager'),
   jobForm: document.getElementById('jobForm'),
   spoolFormStatus: document.getElementById('spoolFormStatus'),
   printerFormStatus: document.getElementById('printerFormStatus'),
@@ -74,7 +78,7 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
     const response = await fetch(url, finalOptions);
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(text || `Request failed: ${response.status}`);
+      throw new Error(translateApiError(text, response.status));
     }
 
     const contentType = response.headers.get('content-type') || '';
@@ -83,10 +87,49 @@ async function fetchJSON(url, options = {}, timeoutMs = 10000) {
     if (error?.name === 'AbortError') {
       throw new Error('Сервер долго отвечает. Проверьте соединение и попробуйте ещё раз.');
     }
-    throw error;
+    if (error instanceof Error) throw error;
+    throw new Error(translateApiError(String(error?.message || error || ''), 0));
   } finally {
     clearTimeout(timeoutId);
   }
+}
+
+function translateApiError(raw, status = 0) {
+  const text = String(raw || '').trim();
+  if (!text) {
+    if (status >= 500) return 'Ошибка сервера. Попробуйте позже.';
+    if (status === 404) return 'Объект не найден';
+    if (status === 400) return 'Некорректные данные запроса';
+    return 'Не удалось выполнить запрос';
+  }
+
+  let message = text;
+  try {
+    const parsed = JSON.parse(text);
+    if (parsed && typeof parsed === 'object') {
+      message = String(parsed.message || parsed.error || parsed.status || text);
+    }
+  } catch (_error) {
+    // plain text
+  }
+
+  const lower = message.toLowerCase();
+  if (lower.includes('insufficient filament') || lower.includes('не хватает пластика')) {
+    return 'На катушке не хватает пластика для этой печати';
+  }
+  if (lower.includes('not found')) return 'Объект не найден';
+  if (lower.includes('method not allowed')) return 'Метод не поддерживается';
+  if (lower.includes('invalid printer')) return 'Некорректный принтер';
+  if (lower.includes('invalid product')) return 'Некорректный продукт';
+  if (lower.includes('invalid spool')) return 'Некорректная катушка';
+  if (lower.includes('invalid job')) return 'Некорректная задача';
+  if (lower.includes('invalid payload') || lower.includes('invalid input')) {
+    return 'Некорректные данные запроса';
+  }
+  if (message.startsWith('{') || message.startsWith('[')) {
+    return status >= 500 ? 'Ошибка сервера. Попробуйте позже.' : 'Не удалось выполнить запрос';
+  }
+  return message;
 }
 
 function isActiveJobStatus(status) {
@@ -184,6 +227,7 @@ function normalizeJob(job) {
     isDraft: Boolean(job.is_draft),
     estimatedWeight: Number(job.estimated_weight ?? 0),
     consumedWeight: Number(job.consumed_weight ?? 0),
+    needsFilamentTopUp: Boolean(job.needs_filament_top_up),
     remainingMinutes: Number(job.remaining_minutes ?? 0),
     estimatedDurationSec: Number(job.estimated_duration_sec ?? 0),
     layerCurrent: Number(job.layer_current ?? 0),
@@ -563,7 +607,9 @@ function renderOverview() {
           <div class="overview-item">
             <div>
               <strong>${title}</strong>
-              <span>${translateStatus(status)}${job.isDraft ? ' • нужна катушка' : ''}${needsTopUp ? ' • догрузить пластик' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
+              <span>${translateStatus(status)}${job.isDraft ? ' • нужна катушка' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}</span>
+              ${needsTopUp ? '<span class="job-flag top-up">догрузите пластик</span>' : ''}
+              ${job.isDraft ? '<span class="job-flag needs-spool">нужна катушка</span>' : ''}
             </div>
             <div class="overview-meta">
               <span>${status === 'completed' ? '100%' : `${Math.round(progress)}%`}</span>
@@ -635,7 +681,7 @@ function renderSpools() {
               <img class="qr-thumb" src="${qrImageUrl}" alt="QR-${spool.qr}" title="Открыть статистику катушки" />
             </a>
           </td>
-          <td>
+          <td class="status-cell">
             <div class="row-actions">
               <span class="status-pill ${statusClass}">${displayStatus}</span>
               <button class="mini-btn delete" data-delete-type="spool" data-delete-id="${spool.id}" aria-label="Удалить катушку" title="Удалить">×</button>
@@ -682,27 +728,72 @@ function renderPrinters() {
     .join('');
 }
 
+const PRODUCTS_PER_PAGE = 6;
+
+function productCardHTML(product) {
+  return `
+    <div class="product-card">
+      <strong>${product.name}</strong>
+      <span>${product.material} • ${product.estimatedWeight} г • ${product.estimatedPrintTime}</span>
+      <span>${product.description}</span>
+      <span>${formatProductPrice(product)}</span>
+      <div class="card-actions top-gap">
+        <button class="mini-btn delete" data-delete-type="product" data-delete-id="${product.id}" aria-label="Удалить продукт" title="Удалить">×</button>
+      </div>
+    </div>
+  `;
+}
+
 function renderProducts() {
   if (!refs.productList) return;
 
   if (!state.products.length) {
     refs.productList.innerHTML = '<div class="empty-state"><h3>Продукты ещё не добавлены</h3><p>Сначала добавьте продукт в каталог.</p></div>';
+    if (refs.productPager) {
+      refs.productPager.classList.add('hidden');
+      refs.productPager.innerHTML = '';
+    }
     return;
   }
 
-  refs.productList.innerHTML = state.products
-    .map((product) => `
-      <div class="product-card">
-        <strong>${product.name}</strong>
-        <span>${product.material} • ${product.estimatedWeight} г • ${product.estimatedPrintTime}</span>
-        <span>${product.description}</span>
-        <span>${formatProductPrice(product)}</span>
-        <div class="card-actions top-gap">
-          <button class="mini-btn delete" data-delete-type="product" data-delete-id="${product.id}" aria-label="Удалить продукт" title="Удалить">×</button>
+  const pages = [];
+  for (let i = 0; i < state.products.length; i += PRODUCTS_PER_PAGE) {
+    pages.push(state.products.slice(i, i + PRODUCTS_PER_PAGE));
+  }
+  if (state.productPage >= pages.length) state.productPage = Math.max(0, pages.length - 1);
+
+  refs.productList.className = 'product-list product-carousel';
+  refs.productList.innerHTML = `
+    <div class="product-carousel-track" style="transform: translateX(-${state.productPage * 100}%)">
+      ${pages.map((page) => `
+        <div class="product-page">
+          ${page.map(productCardHTML).join('')}
         </div>
-      </div>
-    `)
-    .join('');
+      `).join('')}
+    </div>
+  `;
+
+  if (!refs.productPager) return;
+  if (pages.length <= 1) {
+    refs.productPager.classList.add('hidden');
+    refs.productPager.innerHTML = '';
+    return;
+  }
+
+  refs.productPager.classList.remove('hidden');
+  refs.productPager.innerHTML = `
+    <button type="button" class="product-page-btn" data-product-page-dir="-1" ${state.productPage <= 0 ? 'disabled' : ''}>‹</button>
+    ${pages.map((_, index) => `
+      <button type="button" class="product-page-dot ${index === state.productPage ? 'active' : ''}" data-product-page="${index}" aria-label="Страница ${index + 1}"></button>
+    `).join('')}
+    <button type="button" class="product-page-btn" data-product-page-dir="1" ${state.productPage >= pages.length - 1 ? 'disabled' : ''}>›</button>
+  `;
+}
+
+function setProductPage(page) {
+  const totalPages = Math.max(1, Math.ceil(state.products.length / PRODUCTS_PER_PAGE));
+  state.productPage = Math.max(0, Math.min(totalPages - 1, page));
+  renderProducts();
 }
 
 function renderJobs() {
@@ -734,7 +825,7 @@ function renderJobs() {
         <div class="job-item">
           <div class="job-title">
             <strong>${title}</strong>
-            <span>Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}${needsTopUp ? ' • догрузить пластик' : ''}</span>
+            <span>Принтер ${job.printer}${job.source === 'bambu' ? ' • Bambu' : ''} • ${getJobTimeLabel(job)}${layerLabel ? ` • ${layerLabel}` : ''}${job.estimatedWeight > 0 ? ` • ${job.estimatedWeight} г` : ''}</span>
           </div>
           <div class="job-body">
             ${isCompleted ? '' : `
@@ -747,7 +838,7 @@ function renderJobs() {
           </div>
           <div class="card-actions">
             <span class="job-tag ${isCompleted ? 'completed' : effectiveStatus}">${translateStatus(isCompleted ? 'completed' : effectiveStatus)}</span>
-            ${needsTopUp ? '<span class="job-tag topup">догрузить пластик</span>' : ''}
+            ${needsTopUp ? '<span class="job-tag topup">догрузите пластик</span>' : ''}
             ${needsSpool ? `<span class="job-tag draft">катушка?</span><button class="mini-btn" data-confirm-draft-id="${job.id}">Привязать</button>` : ''}
             ${isCompleted || needsSpool ? '' : `<button class="mini-btn" data-job-toggle-id="${job.id}" data-job-toggle-action="${isPaused ? 'resume' : 'pause'}">${actionLabel}</button>`}
             <button class="mini-btn delete" data-delete-type="job" data-delete-id="${job.id}" aria-label="Удалить задачу" title="Удалить">×</button>
@@ -836,6 +927,7 @@ const TOAST_STORAGE_KEY = 'filament.toastState';
 const ONESHOT_EVENT_TYPES = new Set([
   'print_completed',
   'print_started',
+  'filament_short',
   'spool_created',
   'printer_created',
   'product_created',
@@ -877,6 +969,9 @@ function eventToastKey(evt) {
   }
   if (type === 'print_started' && (evt?.payload?.job_id || evt?.job_id)) {
     return `print_started:${evt.payload?.job_id || evt.job_id}`;
+  }
+  if (type === 'filament_short' && (evt?.payload?.job_id || evt?.job_id)) {
+    return `filament_short:${evt.payload?.job_id || evt.job_id}`;
   }
   return String(evt?.id || '');
 }
@@ -966,8 +1061,12 @@ function formatEventTime(iso) {
 }
 
 function jobNeedsFilamentTopUp(job) {
-  if (!job || !isActiveJobStatus(job.status)) return false;
+  if (!job || job.isDraft) return false;
+  if (!isActiveJobStatus(getEffectiveJobStatus(job))) return false;
+  if (job.needsFilamentTopUp) return true;
+  if (job.estimatedWeight > 0 && job.consumedWeight < job.estimatedWeight) return true;
   if (!job.spoolId) return false;
+
   const spool = state.spools.find((item) => String(item.id) === String(job.spoolId));
   if (!spool) return false;
 
@@ -1235,6 +1334,13 @@ function mapServerEvent(type, message) {
   if (type === 'print_completed') {
     return { title: 'Печать', message: 'Задача печати завершена', level: 'success' };
   }
+  if (type === 'filament_short') {
+    return {
+      title: 'Печать',
+      message: message || 'На катушке не хватает пластика — догрузите во время печати',
+      level: 'warning',
+    };
+  }
   return { title: 'Событие', message, level: 'info' };
 }
 
@@ -1242,15 +1348,51 @@ function setFormBusy(form, isBusy) {
   if (!form) return;
   form.dataset.busy = String(isBusy);
   const button = form.querySelector('button[type="submit"]');
-  if (button) {
-    button.disabled = isBusy;
+  if (!button) return;
+  if (button.id === 'cloudLoginBtn') {
     if (isBusy) {
-      button.dataset.originalText = button.textContent;
+      button.disabled = true;
+      button.dataset.busyText = button.textContent;
       button.textContent = '…';
-    } else if (button.dataset.originalText) {
-      button.textContent = button.dataset.originalText;
+    } else {
+      updateCloudLoginButton();
     }
+    return;
   }
+  button.disabled = isBusy;
+  if (isBusy) {
+    button.dataset.originalText = button.textContent;
+    button.textContent = '…';
+  } else if (button.dataset.originalText) {
+    button.textContent = button.dataset.originalText;
+  }
+}
+
+function updateCloudLoginButton() {
+  const form = refs.cloudSyncForm;
+  const btn = refs.cloudLoginBtn || form?.querySelector('#cloudLoginBtn');
+  const resend = refs.cloudResendCodeBtn;
+  if (!btn) return;
+
+  const code = String(form?.cloudVerifyCode?.value || '').trim();
+  if (resend) {
+    resend.classList.toggle('hidden', !state.bambuCodeSent);
+  }
+
+  btn.classList.remove('is-waiting');
+  if (!state.bambuCodeSent) {
+    btn.disabled = false;
+    btn.textContent = 'Отправить код';
+    return;
+  }
+  if (!code) {
+    btn.disabled = true;
+    btn.classList.add('is-waiting');
+    btn.textContent = 'Введите код из email';
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = 'Войти в Bambu Lab';
 }
 
 async function createSpool(event) {
@@ -1288,6 +1430,14 @@ async function syncBambuCloud(event) {
   event.preventDefault();
   const form = event.currentTarget;
   if (form.dataset.busy === 'true') return;
+
+  const code = String(form.cloudVerifyCode?.value || '').trim();
+  if (state.bambuCodeSent && !code) {
+    notify('Введите код из email, затем нажмите «Войти в Bambu Lab»', 'warning', 'Bambu Lab');
+    updateCloudLoginButton();
+    return;
+  }
+
   setFormBusy(form, true);
 
   try {
@@ -1298,16 +1448,18 @@ async function syncBambuCloud(event) {
         email: form.cloudEmail?.value || '',
         password: form.cloudPassword?.value || '',
         region: form.cloudRegion?.value || 'us',
-        verifyCode: form.cloudVerifyCode?.value || '',
+        verifyCode: code,
       }),
     });
 
     if (result.needs_verification) {
-      notify(result.message || 'Введите код из email и войдите снова', 'warning', 'Bambu Lab');
+      state.bambuCodeSent = true;
+      notify(result.message || 'Код отправлен на email. Введите его ниже.', 'warning', 'Bambu Lab');
       form.cloudVerifyCode?.focus();
       return;
     }
 
+    state.bambuCodeSent = false;
     const names = (result.devices || []).map((d) => d.name || d.serial).join(', ');
     notify(`Вход выполнен · синхронизировано: ${result.count || 0} · ${names}`, 'success', 'Bambu Lab');
     if (form.cloudPassword) form.cloudPassword.value = '';
@@ -1318,6 +1470,7 @@ async function syncBambuCloud(event) {
     notify(error.message || 'Не удалось войти в Bambu Lab', 'error', 'Bambu Lab');
   } finally {
     setFormBusy(form, false);
+    updateCloudLoginButton();
   }
 }
 
@@ -1333,7 +1486,9 @@ async function syncBambuCloudSaved() {
     });
     if (result.needs_verification) {
       notify(result.message || 'Нужен повторный вход с кодом из email', 'warning', 'Bambu Lab');
+      state.bambuCodeSent = true;
       setCloudSessionUI(false);
+      updateCloudLoginButton();
       return;
     }
     const names = (result.devices || []).map((d) => d.name || d.serial).join(', ');
@@ -1361,6 +1516,8 @@ async function resendBambuCode() {
       }),
     });
     notify(result.message || 'Код отправлен на email', 'success', 'Bambu Lab');
+    state.bambuCodeSent = true;
+    updateCloudLoginButton();
     form?.cloudVerifyCode?.focus();
   } catch (error) {
     notify(error.message || 'Не удалось отправить код', 'error', 'Bambu Lab');
@@ -1380,6 +1537,8 @@ async function logoutBambuCloud() {
     if (form?.cloudPassword) form.cloudPassword.value = '';
     if (form?.cloudVerifyCode) form.cloudVerifyCode.value = '';
     if (form?.cloudEmail) form.cloudEmail.value = '';
+    state.bambuCodeSent = false;
+    updateCloudLoginButton();
     await refreshCloudAccountBadge();
     await loadData();
   } catch (error) {
@@ -1404,6 +1563,10 @@ function setCloudSessionUI(linked, email = '', region = 'us') {
   const form = refs.cloudSyncForm;
   if (form?.cloudRegion && region) form.cloudRegion.value = region;
   if (form?.cloudEmail && email && !linked) form.cloudEmail.value = email;
+  if (linked) {
+    state.bambuCodeSent = false;
+  }
+  updateCloudLoginButton();
 }
 
 async function refreshCloudAccountBadge() {
@@ -1535,6 +1698,20 @@ async function createPrintJob(event) {
     return;
   }
 
+  const product = state.products.find((item) => String(item.id) === String(productId));
+  const spool = state.spools.find((item) => String(item.id) === String(spoolId));
+  const need = Number(product?.estimatedWeight ?? 0);
+  const have = Number(spool?.remaining ?? 0);
+  if (product && spool && need > have) {
+    const ok = window.confirm(
+      `На катушке не хватает пластика (${have} г из нужных ${need} г).\n\nНажмите ОК, чтобы всё равно запустить печать со статусом «догрузите пластик».\nНажмите Отмена, чтобы не создавать задачу.`,
+    );
+    if (!ok) {
+      setFormBusy(form, false);
+      return;
+    }
+  }
+
   try {
     const result = await fetchJSON('/api/print-jobs', {
       method: 'POST',
@@ -1543,7 +1720,11 @@ async function createPrintJob(event) {
     });
     state.jobRuntimeStarts[result.id] = Date.now();
     if (refs.jobFormStatus) refs.jobFormStatus.textContent = '';
-    notify('Задача печати запущена', 'success', 'Печать', 'print_started');
+    if (result.needs_filament_top_up) {
+      notify('Задача запущена. На катушке не хватает пластика — догрузите во время печати', 'warning', 'Печать', 'filament_short');
+    } else {
+      notify('Задача печати запущена', 'success', 'Печать', 'print_started');
+    }
     form.reset();
     await loadData();
   } catch (error) {
@@ -1624,13 +1805,26 @@ async function confirmDraftJob(jobId) {
     return;
   }
 
+  const need = Number(product.estimatedWeight ?? 0);
+  const have = Number(spool.remaining ?? 0);
+  if (need > have) {
+    const ok = window.confirm(
+      `На катушке не хватает пластика (${have} г из нужных ${need} г).\n\nНажмите ОК, чтобы привязать со статусом «догрузите пластик».\nНажмите Отмена, чтобы не продолжать.`,
+    );
+    if (!ok) return;
+  }
+
   try {
-    await fetchJSON(`/api/print-jobs/${jobId}/confirm`, {
+    const result = await fetchJSON(`/api/print-jobs/${jobId}/confirm`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ productId: product.id, spoolId: spool.id }),
     });
-    notify('Черновик подтверждён, пластик зарезервирован', 'success', 'Печать');
+    if (result?.needs_filament_top_up || need > have) {
+      notify('Катушка привязана. На катушке не хватает пластика — догрузите во время печати', 'warning', 'Печать', 'filament_short');
+    } else {
+      notify('Черновик подтверждён, пластик зарезервирован', 'success', 'Печать');
+    }
     await loadData();
   } catch (error) {
     notify(error.message || 'Не удалось привязать катушку', 'error', 'Печать');
@@ -1765,9 +1959,22 @@ function bindEvents() {
 
   refs.spoolForm.addEventListener('submit', createSpool);
   refs.cloudSyncForm?.addEventListener('submit', syncBambuCloud);
+  refs.cloudSyncForm?.cloudVerifyCode?.addEventListener('input', updateCloudLoginButton);
   refs.cloudSyncOnlyBtn?.addEventListener('click', syncBambuCloudSaved);
   refs.cloudLogoutBtn?.addEventListener('click', logoutBambuCloud);
   refs.cloudResendCodeBtn?.addEventListener('click', resendBambuCode);
+  updateCloudLoginButton();
+  refs.productPager?.addEventListener('click', (event) => {
+    const target = event.target.closest('[data-product-page], [data-product-page-dir]');
+    if (!target) return;
+    if (target.dataset.productPage != null) {
+      setProductPage(Number(target.dataset.productPage));
+      return;
+    }
+    if (target.dataset.productPageDir != null) {
+      setProductPage(state.productPage + Number(target.dataset.productPageDir));
+    }
+  });
   refs.printerForm.addEventListener('submit', createPrinter);
   refs.printerForm?.connectionMode?.addEventListener('change', syncPrinterConnectionFields);
   syncPrinterConnectionFields();

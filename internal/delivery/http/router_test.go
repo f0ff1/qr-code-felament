@@ -141,21 +141,19 @@ func TestPublicSpoolPageAndQRImage(t *testing.T) {
 
 	handler := NewRouter()
 
-	listReq := httptest.NewRequest(http.MethodGet, "/api/spools", nil)
-	listRes := httptest.NewRecorder()
-	handler.ServeHTTP(listRes, listReq)
-	if listRes.Code != http.StatusOK {
-		t.Fatalf("list status = %d", listRes.Code)
+	createBody := `{"material":"PLA","color":"чёрный","manufacturer":"Bambu Lab","initialWeight":1000,"price":30}`
+	createReq := httptest.NewRequest(http.MethodPost, "/api/spools", strings.NewReader(createBody))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRes.Code, createRes.Body.String())
 	}
-
-	var spools []map[string]any
-	if err := json.NewDecoder(listRes.Body).Decode(&spools); err != nil {
-		t.Fatalf("decode spools: %v", err)
+	var created map[string]any
+	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
 	}
-	if len(spools) == 0 {
-		t.Fatal("expected demo spools")
-	}
-	token, _ := spools[0]["qr_token"].(string)
+	token, _ := created["qr_token"].(string)
 	if token == "" {
 		t.Fatal("missing qr_token")
 	}

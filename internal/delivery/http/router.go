@@ -178,8 +178,53 @@ func jsonError(w http.ResponseWriter, message string, status int) {
 	_ = json.NewEncoder(w).Encode(map[string]any{
 		"status":  "error",
 		"code":    status,
-		"message": message,
+		"message": localizeAPIError(message),
 	})
+}
+
+func localizeAPIError(message string) string {
+	msg := strings.TrimSpace(message)
+	lower := strings.ToLower(msg)
+	switch {
+	case msg == "":
+		return "Произошла ошибка. Попробуйте ещё раз."
+	case strings.Contains(lower, "insufficient filament"):
+		return "На катушке не хватает пластика для этой печати"
+	case strings.Contains(lower, "invalid printer id"):
+		return "Некорректный идентификатор принтера"
+	case strings.Contains(lower, "invalid product id"):
+		return "Некорректный идентификатор продукта"
+	case strings.Contains(lower, "invalid spool id"):
+		return "Некорректный идентификатор катушки"
+	case strings.Contains(lower, "invalid job id"):
+		return "Некорректный идентификатор задачи"
+	case strings.Contains(lower, "invalid payload"):
+		return "Некорректные данные запроса"
+	case strings.Contains(lower, "method not allowed"):
+		return "Метод не поддерживается"
+	case strings.Contains(lower, "not found"):
+		return "Объект не найден"
+	case strings.Contains(lower, "job is not a draft"):
+		return "Эта задача уже не черновик"
+	case strings.Contains(lower, "invalid material"):
+		return "Некорректный материал катушки"
+	case strings.Contains(lower, "invalid brand") || strings.Contains(lower, "invalid manufacturer"):
+		return "Некорректный производитель катушки"
+	case strings.Contains(lower, "invalid color"):
+		return "Некорректный цвет катушки"
+	case strings.Contains(lower, "invalid input"):
+		cleaned := strings.TrimSpace(strings.TrimPrefix(msg, "invalid input:"))
+		cleaned = strings.TrimSpace(strings.TrimPrefix(cleaned, "invalid input"))
+		if cleaned == "" || cleaned == msg {
+			return "Некорректные данные"
+		}
+		return localizeAPIError(cleaned)
+	default:
+		if strings.HasPrefix(lower, "invalid ") {
+			return "Некорректные данные запроса"
+		}
+		return msg
+	}
 }
 
 func printerJSON(printer printerdomain.Printer) map[string]any {
@@ -421,10 +466,6 @@ func NewRouter() http.Handler {
 			"count":              len(result.Printers),
 		})
 	})
-
-	demoCtx, demoCancel := context.WithTimeout(context.Background(), 5*time.Second)
-	ensureDemoData(demoCtx, spoolService, printerService, productService, printJobService)
-	demoCancel()
 
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -825,6 +866,7 @@ func NewRouter() http.Handler {
 					"external_task_id":       job.ExternalTaskID,
 					"estimated_weight":       job.EstimatedWeight,
 					"consumed_weight":        job.ConsumedWeight,
+					"needs_filament_top_up":  printjobusecase.NeedsFilamentTopUp(job),
 					"remaining_minutes":      job.RemainingMinutes,
 					"estimated_duration_sec": job.EstimatedDurationSec,
 					"layer_current":          job.LayerCurrent,
@@ -870,10 +912,23 @@ func NewRouter() http.Handler {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("print_started", "Print job started", map[string]any{"job_id": job.ID.String(), "status": string(job.Status)})
+			notifier.Publish("print_started", "Задача печати запущена", map[string]any{"job_id": job.ID.String(), "status": string(job.Status)})
+			if printjobusecase.NeedsFilamentTopUp(job) {
+				notifier.Publish("filament_short", "На катушке не хватает пластика — догрузите во время печати", map[string]any{
+					"job_id":           job.ID.String(),
+					"estimated_weight": job.EstimatedWeight,
+					"consumed_weight":  job.ConsumedWeight,
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": job.ID.String(), "status": string(job.Status)})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                    job.ID.String(),
+				"status":                string(job.Status),
+				"needs_filament_top_up": printjobusecase.NeedsFilamentTopUp(job),
+				"estimated_weight":      job.EstimatedWeight,
+				"consumed_weight":       job.ConsumedWeight,
+			})
 		default:
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 		}
@@ -911,8 +966,20 @@ func NewRouter() http.Handler {
 				return
 			}
 			notifier.Publish("print_started", "Черновик печати подтверждён", map[string]any{"job_id": job.ID.String()})
+			if printjobusecase.NeedsFilamentTopUp(job) {
+				notifier.Publish("filament_short", "На катушке не хватает пластика — догрузите во время печати", map[string]any{
+					"job_id":           job.ID.String(),
+					"estimated_weight": job.EstimatedWeight,
+					"consumed_weight":  job.ConsumedWeight,
+				})
+			}
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(map[string]any{"id": job.ID.String(), "status": string(job.Status), "is_draft": job.IsDraft})
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"id":                    job.ID.String(),
+				"status":                string(job.Status),
+				"is_draft":              job.IsDraft,
+				"needs_filament_top_up": printjobusecase.NeedsFilamentTopUp(job),
+			})
 			return
 		}
 		if len(parts) != 2 {
@@ -1214,43 +1281,6 @@ func NewRouter() http.Handler {
 		_, _ = w.Write(content)
 	})
 	return mux
-}
-
-func ensureDemoData(ctx context.Context, spoolService *spoolusecase.Service, printerService *printerusecase.Service, productService *productusecase.Service, printJobService *printjobusecase.Service) {
-	spools, err := spoolService.List(ctx)
-	if err != nil || len(spools) > 0 {
-		return
-	}
-
-	printerA, err := printerService.Create(ctx, printerusecase.CreateInput{Name: "Prusa MK4", Model: "MK4"})
-	if err == nil {
-		_ = printerA
-	}
-	printerB, err := printerService.Create(ctx, printerusecase.CreateInput{Name: "Bambu A1", Model: "A1"})
-	if err == nil {
-		_ = printerB
-	}
-
-	spoolA, err := spoolService.Create(ctx, spooldomain.MaterialPLA, "Черный", "Bambu", 1000, 35)
-	if err != nil {
-		return
-	}
-	spoolB, err := spoolService.Create(ctx, spooldomain.MaterialPETG, "Белый", "eSUN", 800, 28)
-	if err != nil {
-		return
-	}
-
-	productA, err := productService.Create(ctx, "Кронштейн A", "Кронштейн для корпуса", "PLA", 220, 2*time.Hour+30*time.Minute, 19.9, 0, productdomain.BillingPerson)
-	if err != nil {
-		return
-	}
-	productB, err := productService.Create(ctx, "Корпус B", "Плоский корпус для сборки", "PETG", 310, 3*time.Hour+15*time.Minute, 24.5, 0, productdomain.BillingPerson)
-	if err != nil {
-		return
-	}
-
-	_, _ = printJobService.Start(ctx, printerA.ID, productA.ID, spoolA.ID)
-	_, _ = printJobService.Start(ctx, printerB.ID, productB.ID, spoolB.ID)
 }
 
 func timeFromString(raw string) (time.Duration, error) {
