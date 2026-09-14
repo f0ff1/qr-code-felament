@@ -62,6 +62,23 @@ func (r *SiteRepository) ListByOrg(ctx context.Context, organizationID uuid.UUID
 	return items, rows.Err()
 }
 
+func (r *SiteRepository) ListAll(ctx context.Context) ([]sitedomain.Site, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id, organization_id, name, address, created_at, updated_at FROM sites ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]sitedomain.Site, 0)
+	for rows.Next() {
+		var s sitedomain.Site
+		if err := rows.Scan(&s.ID, &s.OrganizationID, &s.Name, &s.Address, &s.CreatedAt, &s.UpdatedAt); err != nil {
+			return nil, err
+		}
+		items = append(items, s)
+	}
+	return items, rows.Err()
+}
+
 func (r *SiteRepository) GetByID(ctx context.Context, id uuid.UUID) (sitedomain.Site, error) {
 	var s sitedomain.Site
 	row := r.db.QueryRowContext(ctx, `SELECT id, organization_id, name, address, created_at, updated_at FROM sites WHERE id = $1`, id)

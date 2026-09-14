@@ -10,10 +10,14 @@ import {
   updatePendingAlertCount,
   renderActivity,
   ONESHOT_EVENT_TYPES,
+  clearAlertToasts,
 } from './toasts.js';
 import { loadData } from './data.js';
 
+let eventSource = null;
+
 export function handleServerEvent(data, { allowToast = true } = {}) {
+  if (!state.authenticated) return;
   const type = String(data.type || 'info');
   const mapped = mapServerEvent(type, data.message || 'Получено событие');
   const evt = {
@@ -33,13 +37,13 @@ export function handleServerEvent(data, { allowToast = true } = {}) {
     markToastSeen(evt);
     showToast(mapped.message, mapped.level, mapped.title);
   } else if (ONESHOT_EVENT_TYPES.has(type)) {
-    // Уже показали локально при действии пользователя — фиксируем, чтобы не повторить.
     markToastSeen(evt);
   }
   updatePendingAlertCount();
 }
 
 export async function loadNotificationHistory() {
+  if (!state.authenticated) return;
   try {
     const items = await fetchJSON('/api/notifications');
     if (!Array.isArray(items)) return;
@@ -64,7 +68,6 @@ export async function loadNotificationHistory() {
     });
     renderActivity();
 
-    // Страница была закрыта — догоняем непросмотренные уведомления.
     state.serverEvents.forEach((evt) => {
       if (!shouldToastEvent(evt, { fromHistory: true })) return;
       const mapped = mapServerEvent(String(evt.type || 'info'), evt.message || 'Событие');
@@ -77,13 +80,27 @@ export async function loadNotificationHistory() {
   }
 }
 
+export function disconnectEvents() {
+  if (eventSource) {
+    try {
+      eventSource.close();
+    } catch (_error) {
+      // ignore
+    }
+    eventSource = null;
+  }
+}
+
 export function connectEvents() {
-  if (!window.EventSource) return;
+  if (!window.EventSource || !state.authenticated) return;
+  disconnectEvents();
 
   let reconnectToastAt = 0;
   const source = new EventSource('/events');
+  eventSource = source;
 
   source.onmessage = (event) => {
+    if (!state.authenticated || eventSource !== source) return;
     try {
       const data = JSON.parse(event.data);
       handleServerEvent(data, { allowToast: true });
@@ -94,10 +111,28 @@ export function connectEvents() {
   };
 
   source.onerror = () => {
+    if (!state.authenticated || eventSource !== source) return;
     const now = Date.now();
     if (now - reconnectToastAt > 15000) {
       reconnectToastAt = now;
       showToast('Связь в реальном времени переподключается…', 'warning', 'Сеть');
     }
   };
+}
+
+export function clearSessionRuntime() {
+  disconnectEvents();
+  clearAlertToasts();
+  state.spools = [];
+  state.printers = [];
+  state.products = [];
+  state.jobs = [];
+  state.events = [];
+  state.serverEvents = [];
+  state.sites = [];
+  state.adminUsersCache = [];
+  state.adminPasswordResets = [];
+  state.pendingAlertCount = 0;
+  state.completedNotified = new Set();
+  state.toastSessionShown = {};
 }

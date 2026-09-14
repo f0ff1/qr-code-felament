@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"filamenttracker/internal/domain"
@@ -54,6 +55,18 @@ func (r *OrganizationRepository) GetByID(ctx context.Context, id uuid.UUID) (org
 	if err := row.Scan(&o.ID, &o.Name, &o.CreatedAt, &o.UpdatedAt); err != nil {
 		if err == sql.ErrNoRows {
 			return org.Organization{}, fmt.Errorf("%w: organization %s", domain.ErrNotFound, id)
+		}
+		return org.Organization{}, err
+	}
+	return o, nil
+}
+
+func (r *OrganizationRepository) FindByName(ctx context.Context, name string) (org.Organization, error) {
+	var o org.Organization
+	row := r.db.QueryRowContext(ctx, `SELECT id, name, created_at, updated_at FROM organizations WHERE lower(name) = lower($1) ORDER BY created_at ASC LIMIT 1`, strings.TrimSpace(name))
+	if err := row.Scan(&o.ID, &o.Name, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		if err == sql.ErrNoRows {
+			return org.Organization{}, fmt.Errorf("%w: organization %q", domain.ErrNotFound, name)
 		}
 		return org.Organization{}, err
 	}

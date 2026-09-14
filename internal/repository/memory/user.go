@@ -105,6 +105,17 @@ func (r *UserRepository) ListByOrg(ctx context.Context, organizationID uuid.UUID
 	return list, nil
 }
 
+func (r *UserRepository) ListAll(ctx context.Context) ([]userdomain.User, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	list := make([]userdomain.User, 0, len(r.items))
+	for _, u := range r.items {
+		u.SiteIDs = append([]uuid.UUID(nil), r.sites[u.ID]...)
+		list = append(list, u)
+	}
+	return list, nil
+}
+
 func (r *UserRepository) SetSites(ctx context.Context, userID uuid.UUID, siteIDs []uuid.UUID) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()

@@ -27,13 +27,14 @@ import {
   updateCloudLoginButton,
   refreshCloudAccountBadge,
 } from './cloud.js';
-import { ensureAuthenticated, submitLogin, logout, submitForgotPassword } from './auth.js';
+import { ensureAuthenticated, submitLogin, logout, submitForgotPassword, resetToOverview } from './auth.js';
 import { connectEvents, loadNotificationHistory } from './events.js';
 import { bindAdminEvents, loadSitesForAdmin, refreshAdminUsersCache, syncAdminNav } from './admin.js';
 
 function bindEvents() {
   // Local UI tick: progress/status without hitting the network.
   setInterval(() => {
+    if (!state.authenticated) return;
     refreshDerivedState();
     // Завершение Bambu приходит с сервера один раз. Локальный ETA — только для ручных задач.
     for (const job of state.jobs) {
@@ -52,11 +53,13 @@ function bindEvents() {
 
   // Light API poll for jobs/status (~2s).
   setInterval(() => {
+    if (!state.authenticated) return;
     loadJobsFast();
   }, 2000);
 
   // Full snapshot less often to keep DB/API load modest.
   setInterval(() => {
+    if (!state.authenticated) return;
     loadData({ soft: true });
   }, 12000);
 
@@ -200,6 +203,7 @@ function init() {
   document.getElementById('logoutBtn')?.addEventListener('click', logout);
   ensureAuthenticated().then(async (ok) => {
     if (!ok) return;
+    resetToOverview();
     connectEvents();
     refreshCloudAccountBadge();
     loadFilamentCatalog();

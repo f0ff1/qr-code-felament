@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,6 +62,18 @@ func (r *OrganizationRepository) GetByID(ctx context.Context, id uuid.UUID) (org
 		return org.Organization{}, fmt.Errorf("%w: organization %s", domain.ErrNotFound, id)
 	}
 	return item, nil
+}
+
+func (r *OrganizationRepository) FindByName(ctx context.Context, name string) (org.Organization, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	needle := strings.ToLower(strings.TrimSpace(name))
+	for _, item := range r.items {
+		if strings.ToLower(item.Name) == needle {
+			return item, nil
+		}
+	}
+	return org.Organization{}, fmt.Errorf("%w: organization %q", domain.ErrNotFound, name)
 }
 
 func (r *OrganizationRepository) GetDefault(ctx context.Context) (org.Organization, error) {

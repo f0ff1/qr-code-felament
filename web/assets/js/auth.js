@@ -1,7 +1,7 @@
-import { state } from './state.js';
+import { state, refs } from './state.js';
 import { fetchJSON, setUnauthorizedHandler } from './api.js';
 import { loadAppConfig, loadData, loadFilamentCatalog, renderAll } from './data.js';
-import { connectEvents, loadNotificationHistory } from './events.js';
+import { connectEvents, loadNotificationHistory, disconnectEvents, clearSessionRuntime } from './events.js';
 import { refreshCloudAccountBadge } from './cloud.js';
 import { syncAdminNav, loadSitesForAdmin, refreshAdminUsersCache } from './admin.js';
 
@@ -10,11 +10,37 @@ export function showLoginOverlay(visible) {
   if (!overlay) return;
   overlay.classList.toggle('hidden', !visible);
   overlay.setAttribute('aria-hidden', visible ? 'false' : 'true');
+  document.body.classList.toggle('login-open', visible);
   const page = document.querySelector('.page-shell');
-  if (page) page.style.visibility = visible ? 'hidden' : '';
+  if (page) {
+    page.style.visibility = visible ? 'hidden' : '';
+    page.setAttribute('aria-hidden', visible ? 'true' : 'false');
+  }
 }
 
-setUnauthorizedHandler(() => showLoginOverlay(true));
+setUnauthorizedHandler(() => {
+  clearSessionRuntime();
+  state.authenticated = false;
+  state.canWrite = false;
+  showLoginOverlay(true);
+});
+
+export function resetToOverview() {
+  refs.navItems.forEach((item) => {
+    item.classList.toggle('active', item.dataset.view === 'overview');
+  });
+  refs.viewPanels.forEach((panel) => {
+    panel.classList.toggle('hidden', panel.dataset.viewPanel !== 'overview');
+  });
+  state.filter = 'all';
+  state.query = '';
+  state.productPage = 0;
+  if (refs.searchInput) refs.searchInput.value = '';
+  refs.filterGroup?.querySelectorAll('.chip').forEach((chip) => {
+    chip.classList.toggle('active', chip.dataset.filter === 'all');
+  });
+  syncAdminNav();
+}
 
 export function applySession(me) {
   state.authenticated = Boolean(me?.authenticated);
@@ -75,7 +101,9 @@ export async function submitLogin(event) {
         password: form.password.value,
       }),
     });
+    clearSessionRuntime();
     applySession(result);
+    resetToOverview();
     showLoginOverlay(false);
     form.reset();
     connectEvents();
@@ -120,11 +148,16 @@ export async function logout() {
   } catch (_error) {
     // ignore
   }
+  clearSessionRuntime();
+  disconnectEvents();
   state.authenticated = false;
   state.username = '';
   state.role = '';
   state.isAdmin = false;
   state.canWrite = false;
+  state.activeSiteId = '';
+  state.siteIds = [];
+  resetToOverview();
   updateAuthChrome();
   syncAdminNav();
   showLoginOverlay(true);

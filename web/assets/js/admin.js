@@ -252,11 +252,13 @@ export async function renderAdminUsers() {
                   <td><span class="admin-role-pill role-${escapeHtml(u.role)}">${escapeHtml(u.role)}</span></td>
                   <td>${escapeHtml((u.site_ids || []).map(siteName).join(', ') || '—')}</td>
                   <td>${u.is_active ? 'активен' : 'отключён'}</td>
-                  <td class="admin-user-actions">
-                    <button type="button" class="mini-btn" data-reset-user="${u.id}">Новый пароль</button>
-                    <button type="button" class="mini-btn" data-toggle-active="${u.id}" data-active="${u.is_active ? '1' : '0'}">
-                      ${u.is_active ? 'Отключить' : 'Включить'}
-                    </button>
+                  <td>
+                    <div class="admin-user-actions">
+                      <button type="button" class="mini-btn" data-reset-user="${u.id}">Новый пароль</button>
+                      <button type="button" class="mini-btn" data-toggle-active="${u.id}" data-active="${u.is_active ? '1' : '0'}">
+                        ${u.is_active ? 'Отключить' : 'Включить'}
+                      </button>
+                    </div>
                   </td>
                 </tr>`).join('')}
             </tbody>

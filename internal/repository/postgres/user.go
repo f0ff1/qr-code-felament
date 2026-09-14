@@ -116,6 +116,30 @@ func (r *UserRepository) ListByOrg(ctx context.Context, organizationID uuid.UUID
 	return items, rows.Err()
 }
 
+func (r *UserRepository) ListAll(ctx context.Context) ([]userdomain.User, error) {
+	rows, err := r.db.QueryContext(ctx, `SELECT id, organization_id, username, password_hash, first_name, last_name, role, is_active, created_at, updated_at FROM users ORDER BY created_at ASC`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := make([]userdomain.User, 0)
+	for rows.Next() {
+		var u userdomain.User
+		var role string
+		if err := rows.Scan(&u.ID, &u.OrganizationID, &u.Username, &u.PasswordHash, &u.FirstName, &u.LastName, &role, &u.IsActive, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, err
+		}
+		u.Role = userdomain.Role(role)
+		sites, err := r.GetSiteIDs(ctx, u.ID)
+		if err != nil {
+			return nil, err
+		}
+		u.SiteIDs = sites
+		items = append(items, u)
+	}
+	return items, rows.Err()
+}
+
 func (r *UserRepository) SetSites(ctx context.Context, userID uuid.UUID, siteIDs []uuid.UUID) error {
 	tx, err := r.db.BeginTx(ctx, nil)
 	if err != nil {

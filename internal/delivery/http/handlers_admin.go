@@ -30,9 +30,10 @@ func registerAdminRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			payload := make([]map[string]any, 0, len(sites))
 			for _, s := range sites {
 				payload = append(payload, map[string]any{
-					"id":      s.ID.String(),
-					"name":    s.Name,
-					"address": s.Address,
+					"id":              s.ID.String(),
+					"organization_id": s.OrganizationID.String(),
+					"name":            s.Name,
+					"address":         s.Address,
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
@@ -59,9 +60,10 @@ func registerAdminRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{
-				"id":      site.ID.String(),
-				"name":    site.Name,
-				"address": site.Address,
+				"id":              site.ID.String(),
+				"organization_id": site.OrganizationID.String(),
+				"name":            site.Name,
+				"address":         site.Address,
 			})
 		default:
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)

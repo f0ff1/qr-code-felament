@@ -2,6 +2,7 @@ package admin
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -19,6 +20,7 @@ type OrgRepository interface {
 	EnsureDefault(ctx context.Context) error
 	GetDefault(ctx context.Context) (orgdomain.Organization, error)
 	GetByID(ctx context.Context, id uuid.UUID) (orgdomain.Organization, error)
+	FindByName(ctx context.Context, name string) (orgdomain.Organization, error)
 	Update(ctx context.Context, o orgdomain.Organization) error
 	Upsert(ctx context.Context, o orgdomain.Organization) error
 }
@@ -28,6 +30,7 @@ type SiteRepository interface {
 	Create(ctx context.Context, s sitedomain.Site) error
 	Update(ctx context.Context, s sitedomain.Site) error
 	ListByOrg(ctx context.Context, orgID uuid.UUID) ([]sitedomain.Site, error)
+	ListAll(ctx context.Context) ([]sitedomain.Site, error)
 	GetByID(ctx context.Context, id uuid.UUID) (sitedomain.Site, error)
 }
 
@@ -36,6 +39,7 @@ type UserRepository interface {
 	Update(ctx context.Context, u userdomain.User) error
 	GetByID(ctx context.Context, id uuid.UUID) (userdomain.User, error)
 	ListByOrg(ctx context.Context, orgID uuid.UUID) ([]userdomain.User, error)
+	ListAll(ctx context.Context) ([]userdomain.User, error)
 	SetSites(ctx context.Context, userID uuid.UUID, siteIDs []uuid.UUID) error
 }
 
@@ -75,7 +79,29 @@ func (s *Service) EnsureDefaults(ctx context.Context) error {
 }
 
 func (s *Service) ListSites(ctx context.Context) ([]sitedomain.Site, error) {
-	return s.sites.ListByOrg(ctx, orgdomain.DefaultOrganizationID)
+	return s.sites.ListAll(ctx)
+}
+
+func (s *Service) resolveOrganization(ctx context.Context, name string) (orgdomain.Organization, error) {
+	if err := s.orgs.EnsureDefault(ctx); err != nil {
+		return orgdomain.Organization{}, err
+	}
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return s.orgs.GetDefault(ctx)
+	}
+	existing, err := s.orgs.FindByName(ctx, name)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, domain.ErrNotFound) {
+		return orgdomain.Organization{}, err
+	}
+	org := orgdomain.New(name)
+	if err := s.orgs.Upsert(ctx, org); err != nil {
+		return orgdomain.Organization{}, err
+	}
+	return org, nil
 }
 
 func (s *Service) CreateSite(ctx context.Context, in CreateSiteInput) (sitedomain.Site, error) {
@@ -83,19 +109,9 @@ func (s *Service) CreateSite(ctx context.Context, in CreateSiteInput) (sitedomai
 	if name == "" {
 		return sitedomain.Site{}, fmt.Errorf("%w: site name required", domain.ErrInvalid)
 	}
-	if err := s.orgs.EnsureDefault(ctx); err != nil {
-		return sitedomain.Site{}, err
-	}
-	org, err := s.orgs.GetDefault(ctx)
+	org, err := s.resolveOrganization(ctx, in.OrganizationName)
 	if err != nil {
 		return sitedomain.Site{}, err
-	}
-	if n := strings.TrimSpace(in.OrganizationName); n != "" && n != org.Name {
-		org.Name = n
-		org.UpdatedAt = time.Now().UTC()
-		if err := s.orgs.Update(ctx, org); err != nil {
-			return sitedomain.Site{}, err
-		}
 	}
 	site := sitedomain.New(org.ID, name, strings.TrimSpace(in.Address))
 	if err := s.sites.Create(ctx, site); err != nil {
@@ -142,13 +158,19 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (CreateUse
 		return CreateUserResult{}, fmt.Errorf("%w: at least one site required", domain.ErrInvalid)
 	}
 	siteIDs := in.SiteIDs
+	orgID := orgdomain.DefaultOrganizationID
+	if len(siteIDs) > 0 {
+		if site, err := s.sites.GetByID(ctx, siteIDs[0]); err == nil && site.OrganizationID != uuid.Nil {
+			orgID = site.OrganizationID
+		}
+	}
 	if in.Role == userdomain.RoleAdmin && len(siteIDs) == 0 {
 		siteIDs = []uuid.UUID{orgdomain.DefaultSiteID}
 	}
 	now := time.Now().UTC()
 	u := userdomain.User{
 		ID:             uuid.New(),
-		OrganizationID: orgdomain.DefaultOrganizationID,
+		OrganizationID: orgID,
 		Username:       username,
 		PasswordHash:   hash,
 		FirstName:      strings.TrimSpace(in.FirstName),
@@ -169,7 +191,7 @@ func (s *Service) CreateUser(ctx context.Context, in CreateUserInput) (CreateUse
 }
 
 func (s *Service) ListUsers(ctx context.Context) ([]userdomain.User, error) {
-	return s.users.ListByOrg(ctx, orgdomain.DefaultOrganizationID)
+	return s.users.ListAll(ctx)
 }
 
 func (s *Service) SetUserPassword(ctx context.Context, userID uuid.UUID, password string) (string, error) {

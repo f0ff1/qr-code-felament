@@ -64,6 +64,16 @@ func (r *SiteRepository) ListByOrg(ctx context.Context, organizationID uuid.UUID
 	return list, nil
 }
 
+func (r *SiteRepository) ListAll(ctx context.Context) ([]sitedomain.Site, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	list := make([]sitedomain.Site, 0, len(r.items))
+	for _, s := range r.items {
+		list = append(list, s)
+	}
+	return list, nil
+}
+
 func (r *SiteRepository) GetByID(ctx context.Context, id uuid.UUID) (sitedomain.Site, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

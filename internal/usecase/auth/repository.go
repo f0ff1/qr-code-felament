@@ -15,6 +15,7 @@ type UserRepository interface {
 	Create(ctx context.Context, u userdomain.User) error
 	Update(ctx context.Context, u userdomain.User) error
 	ListByOrg(ctx context.Context, orgID uuid.UUID) ([]userdomain.User, error)
+	ListAll(ctx context.Context) ([]userdomain.User, error)
 	SetSites(ctx context.Context, userID uuid.UUID, siteIDs []uuid.UUID) error
 	GetSiteIDs(ctx context.Context, userID uuid.UUID) ([]uuid.UUID, error)
 }

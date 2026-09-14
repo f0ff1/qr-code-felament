@@ -88,6 +88,15 @@ p {
   display: none;
 }
 
+body.login-open .page-shell {
+  visibility: hidden;
+  pointer-events: none;
+}
+
+body.login-open .toast-stack {
+  display: none !important;
+}
+
 .login-card {
   width: min(420px, calc(100vw - 32px));
   display: flex;
@@ -272,8 +281,7 @@ p {
 
 .admin-users-table {
   width: 100%;
-  border-collapse: separate;
-  border-spacing: 0;
+  border-collapse: collapse;
   table-layout: fixed;
   min-width: 720px;
 }
@@ -283,7 +291,7 @@ p {
   padding: 12px 14px;
   text-align: left;
   border-bottom: 1px solid var(--border);
-  vertical-align: top;
+  vertical-align: middle;
 }
 
 .admin-users-table th:nth-child(1),
@@ -345,6 +353,7 @@ p {
   gap: 8px;
   flex-wrap: nowrap;
   justify-content: flex-end;
+  align-items: center;
   white-space: nowrap;
 }
 
