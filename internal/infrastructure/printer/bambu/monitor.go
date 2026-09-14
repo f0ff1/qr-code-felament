@@ -89,12 +89,26 @@ type printTelemetry struct {
 }
 
 func NewMonitor(printers PrinterStore, jobs JobSyncer, notifier EventPublisher) *Monitor {
+	return NewMonitorWithOptions(printers, jobs, notifier, secrets.NewBoxFromEnv(), 7*time.Second)
+}
+
+func NewMonitorWithSecrets(printers PrinterStore, jobs JobSyncer, notifier EventPublisher, box *secrets.Box, interval time.Duration) *Monitor {
+	return NewMonitorWithOptions(printers, jobs, notifier, box, interval)
+}
+
+func NewMonitorWithOptions(printers PrinterStore, jobs JobSyncer, notifier EventPublisher, box *secrets.Box, interval time.Duration) *Monitor {
+	if box == nil {
+		box = secrets.NewBoxFromEnv()
+	}
+	if interval <= 0 {
+		interval = 7 * time.Second
+	}
 	return &Monitor{
 		printers:      printers,
 		jobs:          jobs,
 		notifier:      notifier,
-		secrets:       secrets.NewBoxFromEnv(),
-		interval:      7 * time.Second,
+		secrets:       box,
+		interval:      interval,
 		known:         make(map[string]uuid.UUID),
 		cloudSessions: make(map[string]*cloudSession),
 	}
@@ -189,7 +203,7 @@ func (m *Monitor) ensureConnected(p printerdomain.Printer) error {
 	_, err := m.client.Add(bambulabs.Config{
 		Host:         ip,
 		SerialNumber: p.LANSerial,
-		AccessCode:   p.LANAccessCode,
+		AccessCode:   m.openSecret(p.LANAccessCode),
 		Model:        mapModel(p.Model),
 		MQTTPort:     8883,
 	})
@@ -413,6 +427,14 @@ func (m *Monitor) applySnapshot(ctx context.Context, p printerdomain.Printer, sn
 				"file_name":  job.FileName,
 				"is_draft":   job.IsDraft,
 			})
+			if printjobusecase.NeedsFilamentTopUp(job) {
+				m.notifier.Publish("filament_short", fmt.Sprintf("На катушке не хватает пластика для «%s» — догрузите во время печати", job.FileName), map[string]any{
+					"job_id":            job.ID.String(),
+					"printer_id":        p.ID.String(),
+					"estimated_weight":  job.EstimatedWeight,
+					"consumed_weight":   job.ConsumedWeight,
+				})
+			}
 		} else if job.Status == printjobdomain.StatusCompleted {
 			m.notifier.Publish("print_completed", "Печать завершена", map[string]any{
 				"job_id":     job.ID.String(),

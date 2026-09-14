@@ -19,11 +19,12 @@ func TestSchedulerScanPublishesLowSpoolNotification(t *testing.T) {
 
 	spoolEntity := spooldomain.NewSpool(spooldomain.MaterialPLA, "Black", "eSUN", 100, 30)
 	spoolEntity.CurrentWeight = 10
+	spoolEntity.Status = spooldomain.StatusAvailable
 	if err := spoolRepo.Create(context.Background(), spoolEntity); err != nil {
 		t.Fatalf("Create spool error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, nil, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, nil, notifier, 0)
 	scheduler.Scan(context.Background())
 
 	events := notifier.List()
@@ -33,9 +34,15 @@ func TestSchedulerScanPublishesLowSpoolNotification(t *testing.T) {
 	if events[0].Type != "spool_low" {
 		t.Fatalf("event type = %s, want spool_low", events[0].Type)
 	}
+
+	// Second scan must not repeat the same low warning.
+	scheduler.Scan(context.Background())
+	if got := len(notifier.List()); got != 1 {
+		t.Fatalf("after second scan len(events) = %d, want 1", got)
+	}
 }
 
-func TestSchedulerScanPublishesPrintCompletedNotification(t *testing.T) {
+func TestSchedulerScanDoesNotSpamCompletedPrints(t *testing.T) {
 	printJobRepo := memory.NewPrintJobRepository()
 	notifier := notificationusecase.NewService()
 
@@ -46,18 +53,11 @@ func TestSchedulerScanPublishesPrintCompletedNotification(t *testing.T) {
 		t.Fatalf("Create print job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(nil, printJobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(nil, printJobRepo, notifier, 0)
 	scheduler.Scan(context.Background())
 
-	events := notifier.List()
-	if len(events) != 1 {
-		t.Fatalf("len(events) = %d, want 1", len(events))
-	}
-	if events[0].Type != "print_completed" {
-		t.Fatalf("event type = %s, want print_completed", events[0].Type)
-	}
-	if events[0].Payload["job_id"] == nil {
-		t.Fatal("print_completed payload missing job_id")
+	if got := len(notifier.List()); got != 0 {
+		t.Fatalf("completed jobs must not be re-notified by scanner, got %d", got)
 	}
 }
 
@@ -80,7 +80,7 @@ func TestSchedulerSyncRuntimeStateRefreshesActiveStatus(t *testing.T) {
 		t.Fatalf("Create print job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -118,7 +118,7 @@ func TestSchedulerSyncRuntimeStateMarksSpoolInUseWhileJobIsActive(t *testing.T) 
 		t.Fatalf("Create print job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -150,7 +150,7 @@ func TestSchedulerSyncRuntimeStateResetsStatusAfterPrintFinished(t *testing.T) {
 		t.Fatalf("Create completed job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -182,7 +182,7 @@ func TestSchedulerSyncRuntimeStateMarksLowAfterFinishedPrint(t *testing.T) {
 		t.Fatalf("Create completed job error = %v", err)
 	}
 
-	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier)
+	scheduler := NewSchedulerWithDeps(spoolRepo, jobRepo, notifier, 0)
 	scheduler.syncRuntimeState(context.Background())
 
 	updatedSpool, err := spoolRepo.GetByID(context.Background(), spoolEntity.ID)
@@ -195,7 +195,7 @@ func TestSchedulerSyncRuntimeStateMarksLowAfterFinishedPrint(t *testing.T) {
 }
 
 func TestSchedulerRunUsesTicker(t *testing.T) {
-	scheduler := NewSchedulerWithDeps(nil, nil, notificationusecase.NewService())
+	scheduler := NewSchedulerWithDeps(nil, nil, notificationusecase.NewService(), 0)
 	scheduler.tick = 10 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()

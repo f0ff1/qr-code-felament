@@ -16,6 +16,7 @@ const (
 
 type Product struct {
 	ID                 uuid.UUID
+	SiteID             uuid.UUID
 	Name               string
 	Description        string
 	Material           string

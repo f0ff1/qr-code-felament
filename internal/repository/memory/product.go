@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"filamenttracker/internal/domain"
+	"filamenttracker/internal/domain/org"
 	productdomain "filamenttracker/internal/domain/product"
 
 	"github.com/google/uuid"
@@ -21,6 +22,9 @@ func NewProductRepository() *ProductRepository {
 func (r *ProductRepository) Create(ctx context.Context, p productdomain.Product) error {
 	if _, exists := r.items[p.ID]; exists {
 		return fmt.Errorf("%w: product already exists", domain.ErrConflict)
+	}
+	if p.SiteID == uuid.Nil {
+		p.SiteID = org.DefaultSiteID
 	}
 	r.items[p.ID] = p
 	return nil

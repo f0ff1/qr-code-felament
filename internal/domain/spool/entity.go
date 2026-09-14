@@ -3,8 +3,9 @@ package spool
 import (
 	"time"
 
+	"filamenttracker/internal/domain/org"
+
 	"github.com/google/uuid"
-	"github.com/skip2/go-qrcode"
 )
 
 type Material string
@@ -26,6 +27,7 @@ const (
 
 type Spool struct {
 	ID            uuid.UUID
+	SiteID        uuid.UUID
 	QRToken       string
 	Material      Material
 	Color         string
@@ -41,6 +43,7 @@ type Spool struct {
 func NewSpool(material Material, color, manufacturer string, initialWeight int, price float64) Spool {
 	return Spool{
 		ID:            uuid.New(),
+		SiteID:        org.DefaultSiteID,
 		QRToken:       GenerateQRToken(),
 		Material:      material,
 		Color:         color,
@@ -58,9 +61,8 @@ func GenerateQRToken() string {
 	return uuid.NewString()[:8]
 }
 
-func GenerateQRPNG(token string) ([]byte, error) {
-	return qrcode.Encode(token, qrcode.Medium, 256)
-}
+// LowWeightGrams is the threshold for StatusLow. Set once from config at process start.
+var LowWeightGrams = 200
 
 func (s *Spool) EffectiveStatus(inUse bool) Status {
 	if inUse {
@@ -69,7 +71,11 @@ func (s *Spool) EffectiveStatus(inUse bool) Status {
 	if s.CurrentWeight <= 0 {
 		return StatusEmpty
 	}
-	if s.CurrentWeight < 200 {
+	threshold := LowWeightGrams
+	if threshold < 0 {
+		threshold = 200
+	}
+	if s.CurrentWeight < threshold {
 		return StatusLow
 	}
 	return StatusAvailable

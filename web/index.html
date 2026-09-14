@@ -11,7 +11,39 @@
     <link rel="stylesheet" href="/assets/styles.css" />
   </head>
   <body>
+    <div id="loginOverlay" class="login-overlay hidden" aria-hidden="true">
+      <form id="loginForm" class="login-card">
+        <div class="brand-label">Filament Tracker</div>
+        <h1>Вход</h1>
+        <p class="form-hint">Войдите, чтобы управлять складом и принтерами.</p>
+        <label>
+          <span>Логин</span>
+          <input name="username" type="text" autocomplete="username" required />
+        </label>
+        <label>
+          <span>Пароль</span>
+          <input name="password" type="password" autocomplete="current-password" required />
+        </label>
+        <div id="loginError" class="form-status"></div>
+        <button type="submit" class="primary-btn">Войти</button>
+        <button type="button" id="forgotPasswordBtn" class="mini-btn" style="margin-top:12px;width:100%">Забыл пароль</button>
+      </form>
+    </div>
     <div id="toastStack" class="toast-stack" aria-live="polite" aria-atomic="false"></div>
+    <div id="credentialModal" class="credential-modal hidden" aria-hidden="true">
+      <div class="credential-card" role="dialog" aria-labelledby="credentialTitle">
+        <div class="brand-label">Доступ</div>
+        <h2 id="credentialTitle">Учётные данные</h2>
+        <p class="form-hint" id="credentialHint">Сохраните пароль сейчас — повторно его увидеть нельзя.</p>
+        <label><span>Логин</span><input id="credentialLogin" readonly /></label>
+        <label><span>Пароль</span><input id="credentialPassword" readonly /></label>
+        <div class="form-actions credential-actions">
+          <button type="button" id="credentialCopyBtn" class="primary-btn">Скопировать пароль</button>
+          <button type="button" id="credentialCloseBtn" class="mini-btn">Закрыть</button>
+        </div>
+        <div id="credentialCopyStatus" class="form-status"></div>
+      </div>
+    </div>
     <div class="page-shell">
       <aside class="sidebar">
         <div class="brand">
@@ -20,6 +52,17 @@
             <div class="brand-label">Filament</div>
             <strong>Tracker</strong>
           </div>
+        </div>
+        <div class="sidebar-user" id="sidebarUserCard">
+          <div class="sidebar-user-meta">
+            <div class="sidebar-user-name" id="authUserLabel">—</div>
+            <div class="sidebar-user-role muted" id="authUserRole"></div>
+          </div>
+          <label class="sidebar-site-field hidden" id="activeSiteField" data-admin-only>
+            <span class="sidebar-site-label">Склад</span>
+            <select id="activeSiteSelect" aria-label="Активный склад"></select>
+          </label>
+          <button type="button" id="logoutBtn" class="sidebar-logout-btn hidden">Выйти</button>
         </div>
 
         <nav class="nav">
@@ -43,6 +86,10 @@
             <span class="nav-icon">⏱</span>
             Задачи
           </button>
+          <button class="nav-item hidden" data-view="admin" data-admin-only>
+            <span class="nav-icon">⚙</span>
+            Админ
+          </button>
         </nav>
 
         <div class="status-panel">
@@ -51,9 +98,10 @@
             <span class="status-dot online"></span>
             Синхронизация в реальном времени
           </div>
-          <div class="status-row muted">
+          <div class="status-row muted alerts-row">
             <span class="status-dot partial"></span>
             <span id="alertCount">0 уведомлений</span>
+            <button id="clearAlertsBtn" class="alerts-clear" type="button" title="Очистить уведомления" aria-label="Очистить уведомления">×</button>
           </div>
         </div>
       </aside>
@@ -170,14 +218,14 @@
                     <th>Остаток на д.н.</th>
                     <th>Остаток в буд.</th>
                     <th>QR</th>
-                    <th>Статус</th>
+                    <th class="status-col">Статус</th>
                   </tr>
                 </thead>
                 <tbody id="spoolTableBody"></tbody>
               </table>
             </div>
 
-            <form id="spoolForm" class="data-form">
+            <form id="spoolForm" class="data-form" data-write-only>
               <div class="form-header">
                 <h3>Добавить катушку</h3>
               </div>
@@ -228,7 +276,7 @@
             </div>
             <div id="printerList" class="printer-list"></div>
 
-            <form id="cloudSyncForm" class="data-form">
+            <form id="cloudSyncForm" class="data-form" data-write-only>
               <div class="form-header">
                 <h3>Bambu Lab аккаунт</h3>
               </div>
@@ -266,18 +314,18 @@
                   <input name="cloudVerifyCode" type="text" placeholder="6-значный код" autocomplete="one-time-code" />
                 </label>
                 <p class="form-hint form-span-2">
-                  После «Войти» Bambu пришлёт код на почту. Введите его и нажмите «Войти» ещё раз.
+                  Нажмите «Отправить код» — Bambu пришлёт код на почту. Введите его, затем нажмите «Войти в Bambu Lab».
                   Если письма нет — проверьте «Спам» и «Отправить код ещё раз».
                 </p>
                 <div class="form-actions form-span-2">
-                  <button type="submit" class="primary-btn">Войти в Bambu Lab</button>
-                  <button type="button" id="cloudResendCodeBtn" class="mini-btn">Отправить код ещё раз</button>
+                  <button type="submit" id="cloudLoginBtn" class="primary-btn">Отправить код</button>
+                  <button type="button" id="cloudResendCodeBtn" class="mini-btn hidden">Отправить код ещё раз</button>
                 </div>
               </div>
               <div id="cloudSyncStatus" class="form-status"></div>
             </form>
 
-            <form id="printerForm" class="data-form">
+            <form id="printerForm" class="data-form" data-write-only>
               <div class="form-header">
                 <h3>Добавить принтер вручную</h3>
               </div>
@@ -340,8 +388,9 @@
               </div>
             </div>
             <div id="productList" class="product-list"></div>
+            <div id="productPager" class="product-pager hidden" aria-label="Страницы продуктов"></div>
 
-            <form id="productForm" class="data-form">
+            <form id="productForm" class="data-form" data-write-only>
               <div class="form-header">
                 <h3>Добавить продукт</h3>
               </div>
@@ -411,7 +460,7 @@
             </div>
             <div id="jobList" class="job-list"></div>
 
-            <form id="jobForm" class="data-form">
+            <form id="jobForm" class="data-form" data-write-only>
               <div class="form-header">
                 <h3>Создать задачу</h3>
               </div>
@@ -449,6 +498,68 @@
             <ul id="activityList" class="activity-list"></ul>
           </div>
         </section>
+
+        <section class="bottom-grid view-panel hidden" data-view-panel="admin" data-admin-only>
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Админ</div>
+                <h2>Пользователи</h2>
+              </div>
+            </div>
+            <form id="adminCreateUserForm" class="data-form">
+              <div class="form-grid">
+                <label><span>Имя</span><input name="first_name" required /></label>
+                <label><span>Фамилия</span><input name="last_name" required /></label>
+                <label><span>Логин</span><input name="username" required autocomplete="off" /></label>
+                <label><span>Пароль</span><input name="password" type="password" minlength="8" placeholder="пусто = сгенерировать" autocomplete="new-password" /></label>
+                <label><span>Роль</span>
+                  <select name="role" required>
+                    <option value="operator">operator</option>
+                    <option value="viewer">viewer</option>
+                    <option value="admin">admin</option>
+                  </select>
+                </label>
+                <label><span>Склад</span><select name="site_id" id="userSiteSelect" required></select></label>
+              </div>
+              <div class="form-actions"><button type="submit" class="primary-btn">Создать пользователя</button></div>
+            </form>
+
+            <div class="admin-users-toolbar">
+              <input id="adminUsersSearch" type="search" placeholder="Поиск: логин, имя, фамилия…" />
+              <select id="adminUsersRoleFilter" aria-label="Фильтр по роли">
+                <option value="all">Все роли</option>
+                <option value="admin">admin</option>
+                <option value="operator">operator</option>
+                <option value="viewer">viewer</option>
+              </select>
+              <select id="adminUsersActiveFilter" aria-label="Фильтр по статусу">
+                <option value="all">Все статусы</option>
+                <option value="active">Активные</option>
+                <option value="inactive">Отключённые</option>
+              </select>
+            </div>
+            <div id="adminResetsBox" class="admin-resets-box"></div>
+            <div id="adminUsersList" class="admin-users-list"></div>
+            <div id="adminUsersPager" class="admin-users-pager"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head compact">
+              <div>
+                <div class="panel-kicker">Админ</div>
+                <h2>Склады</h2>
+              </div>
+            </div>
+            <form id="adminCreateSiteForm" class="data-form">
+              <div class="form-grid">
+                <label class="form-span-2"><span>Компания</span><input name="organization_name" placeholder="пустой = Default Company; новое имя = новая компания" /></label>
+                <label><span>Название склада</span><input name="name" required /></label>
+                <label><span>Адрес</span><input name="address" /></label>
+              </div>
+              <div class="form-actions"><button type="submit" class="primary-btn">Создать склад</button></div>
+            </form>
+          </div>
+        </section>
       </main>
     </div>
 
@@ -461,6 +572,6 @@
   <small>Made with questionable legality &amp; a lot of filament.</small>
 </footer>
 
-    <script src="/assets/app.js"></script>
+    <script type="module" src="/assets/js/main.js"></script>
   </body>
 </html>

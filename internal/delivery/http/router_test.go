@@ -9,15 +9,43 @@ import (
 
 	printjobdomain "filamenttracker/internal/domain/printjob"
 	spooldomain "filamenttracker/internal/domain/spool"
+	spoolusecase "filamenttracker/internal/usecase/spool"
 
 	"github.com/google/uuid"
 )
+
+func testRouter(t *testing.T) http.Handler {
+	t.Helper()
+	// Isolate from local .env / .env.local (admin auth, docker hostnames).
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("ADMIN_PASSWORD", "")
+	t.Setenv("ADMIN_PASSWORD_HASH", "")
+	t.Setenv("DATABASE_URL", "")
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("ALLOW_INMEMORY", "1")
+	return NewRouter()
+}
+
+func withSessionCookie(t *testing.T, handler http.Handler, req *http.Request) *http.Request {
+	t.Helper()
+	loginReq := httptest.NewRequest(http.MethodPost, "/api/auth/login", strings.NewReader(`{"username":"admin","password":"admin"}`))
+	loginReq.Header.Set("Content-Type", "application/json")
+	loginRes := httptest.NewRecorder()
+	handler.ServeHTTP(loginRes, loginReq)
+	if loginRes.Code != http.StatusOK {
+		t.Fatalf("login status = %d body=%s", loginRes.Code, loginRes.Body.String())
+	}
+	for _, c := range loginRes.Result().Cookies() {
+		req.AddCookie(c)
+	}
+	return req
+}
 
 func TestRouterHealthEndpoint(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/api/health", nil)
 	w := httptest.NewRecorder()
 
-	NewRouter().ServeHTTP(w, r)
+	testRouter(t).ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -28,10 +56,11 @@ func TestRouterHealthEndpoint(t *testing.T) {
 }
 
 func TestRouterSpoolListEndpoint(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/spools", nil)
+	handler := testRouter(t)
+	r := withSessionCookie(t, handler, httptest.NewRequest(http.MethodGet, "/api/spools", nil))
 	w := httptest.NewRecorder()
 
-	NewRouter().ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -39,10 +68,11 @@ func TestRouterSpoolListEndpoint(t *testing.T) {
 }
 
 func TestRouterInventorySummaryEndpoint(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/inventory/summary", nil)
+	handler := testRouter(t)
+	r := withSessionCookie(t, handler, httptest.NewRequest(http.MethodGet, "/api/inventory/summary", nil))
 	w := httptest.NewRecorder()
 
-	NewRouter().ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -53,10 +83,11 @@ func TestRouterInventorySummaryEndpoint(t *testing.T) {
 }
 
 func TestRouterForecastEndpoint(t *testing.T) {
-	r := httptest.NewRequest(http.MethodGet, "/api/forecast?requiredWeight=200", nil)
+	handler := testRouter(t)
+	r := withSessionCookie(t, handler, httptest.NewRequest(http.MethodGet, "/api/forecast?requiredWeight=200", nil))
 	w := httptest.NewRecorder()
 
-	NewRouter().ServeHTTP(w, r)
+	handler.ServeHTTP(w, r)
 
 	if w.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", w.Code, http.StatusOK)
@@ -85,7 +116,7 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 		EstimatedWeight: 220,
 	}}
 
-	currentRemaining := spoolCurrentDisplayRemaining(spool, jobs)
+	currentRemaining := spoolusecase.LiveRemaining(spool, jobs)
 	page := renderSpoolPublicPage(spool, currentRemaining, spool.CurrentWeight, "https://example.com")
 
 	if !strings.Contains(page, "Остаток на данный момент") {
@@ -101,7 +132,7 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 		t.Fatalf("rendered page should show future remaining from DB, got: %s", page)
 	}
 
-	atStart := spoolCurrentDisplayRemaining(spool, []printjobdomain.PrintJob{{
+	atStart := spoolusecase.LiveRemaining(spool, []printjobdomain.PrintJob{{
 		SpoolID:         spool.ID,
 		Status:          printjobdomain.StatusPrinting,
 		Progress:        0,
@@ -110,7 +141,7 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 	if atStart != 1000 {
 		t.Fatalf("current remaining at 0%% = %d, want 1000", atStart)
 	}
-	atEnd := spoolCurrentDisplayRemaining(spool, []printjobdomain.PrintJob{{
+	atEnd := spoolusecase.LiveRemaining(spool, []printjobdomain.PrintJob{{
 		SpoolID:         spool.ID,
 		Status:          printjobdomain.StatusPrinting,
 		Progress:        100,
@@ -120,7 +151,7 @@ func TestRenderSpoolPublicPageUsesCurrentRemaining(t *testing.T) {
 		t.Fatalf("current remaining at 100%% = %d, want 780", atEnd)
 	}
 
-	stale100 := spoolCurrentDisplayRemaining(spool, []printjobdomain.PrintJob{{
+	stale100 := spoolusecase.LiveRemaining(spool, []printjobdomain.PrintJob{{
 		SpoolID:          spool.ID,
 		Status:           printjobdomain.StatusPrinting,
 		Progress:         100,
@@ -139,23 +170,21 @@ func TestPublicSpoolPageAndQRImage(t *testing.T) {
 	t.Setenv("RAILWAY_PUBLIC_DOMAIN", "filament.up.railway.app")
 	t.Setenv("PUBLIC_BASE_URL", "http://localhost:8080")
 
-	handler := NewRouter()
+	handler := testRouter(t)
 
-	listReq := httptest.NewRequest(http.MethodGet, "/api/spools", nil)
-	listRes := httptest.NewRecorder()
-	handler.ServeHTTP(listRes, listReq)
-	if listRes.Code != http.StatusOK {
-		t.Fatalf("list status = %d", listRes.Code)
+	createBody := `{"material":"PLA","color":"чёрный","manufacturer":"Bambu Lab","initialWeight":1000,"price":30}`
+	createReq := withSessionCookie(t, handler, httptest.NewRequest(http.MethodPost, "/api/spools", strings.NewReader(createBody)))
+	createReq.Header.Set("Content-Type", "application/json")
+	createRes := httptest.NewRecorder()
+	handler.ServeHTTP(createRes, createReq)
+	if createRes.Code != http.StatusCreated {
+		t.Fatalf("create status = %d body=%s", createRes.Code, createRes.Body.String())
 	}
-
-	var spools []map[string]any
-	if err := json.NewDecoder(listRes.Body).Decode(&spools); err != nil {
-		t.Fatalf("decode spools: %v", err)
+	var created map[string]any
+	if err := json.NewDecoder(createRes.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create: %v", err)
 	}
-	if len(spools) == 0 {
-		t.Fatal("expected demo spools")
-	}
-	token, _ := spools[0]["qr_token"].(string)
+	token, _ := created["qr_token"].(string)
 	if token == "" {
 		t.Fatal("missing qr_token")
 	}

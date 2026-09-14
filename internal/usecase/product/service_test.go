@@ -69,7 +69,7 @@ func TestPrintJobCanStartWhenFilamentIsEnough(t *testing.T) {
 	}
 }
 
-func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
+func TestPrintJobAllowsInsufficientFilament(t *testing.T) {
 	spoolRepo := memory.NewRepository()
 	printerRepo := memory.NewPrinterRepository()
 	productRepo := memory.NewProductRepository()
@@ -93,8 +93,18 @@ func TestPrintJobRejectsInsufficientFilament(t *testing.T) {
 		t.Fatalf("Create product error = %v", err)
 	}
 
-	if _, err := printJobService.Start(context.Background(), printerEntity.ID, productEntity.ID, spoolEntity.ID); err == nil {
-		t.Fatal("Start() expected error for insufficient filament")
+	job, err := printJobService.Start(context.Background(), printerEntity.ID, productEntity.ID, spoolEntity.ID)
+	if err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if job.EstimatedWeight != 180 {
+		t.Fatalf("EstimatedWeight = %d, want 180", job.EstimatedWeight)
+	}
+	if job.ConsumedWeight != 100 {
+		t.Fatalf("ConsumedWeight = %d, want 100 (partial reserve)", job.ConsumedWeight)
+	}
+	if !printjobusecase.NeedsFilamentTopUp(job) {
+		t.Fatal("expected NeedsFilamentTopUp for partial reserve")
 	}
 }
 

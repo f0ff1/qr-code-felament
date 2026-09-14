@@ -25,7 +25,14 @@ type Service struct {
 }
 
 func NewService() *Service {
-	return &Service{subs: make(map[chan Event]struct{}), ttl: DefaultTTL}
+	return NewServiceWithTTL(DefaultTTL)
+}
+
+func NewServiceWithTTL(ttl time.Duration) *Service {
+	if ttl <= 0 {
+		ttl = DefaultTTL
+	}
+	return &Service{subs: make(map[chan Event]struct{}), ttl: ttl}
 }
 
 func (s *Service) Publish(eventType, message string, payload map[string]any) Event {

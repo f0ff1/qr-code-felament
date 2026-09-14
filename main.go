@@ -8,30 +8,40 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
+	"filamenttracker/internal/bootstrap"
 	"filamenttracker/internal/config"
 	httpdelivery "filamenttracker/internal/delivery/http"
-	"filamenttracker/internal/worker"
 )
 
 func main() {
 	cfg := config.Load()
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("config: %v", err)
+	}
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	scheduler := worker.NewScheduler()
-	if err := scheduler.Run(ctx); err != nil {
-		log.Fatalf("worker failed: %v", err)
+	app, err := bootstrap.NewApp(cfg)
+	if err != nil {
+		log.Fatalf("bootstrap: %v", err)
 	}
+	defer func() {
+		if err := app.Close(); err != nil {
+			log.Printf("app close: %v", err)
+		}
+	}()
+	app.Start(ctx)
 
-	mux := httpdelivery.NewRouter()
+	handler := httpdelivery.NewServer(app)
 	addr := ":" + cfg.Port
 	server := &http.Server{
 		Addr:              addr,
-		Handler:           mux,
-		ReadHeaderTimeout: 5 * time.Second,
-		IdleTimeout:       60 * time.Second,
+		Handler:           handler,
+		ReadHeaderTimeout: cfg.HTTPReadHeaderTimeout,
+		IdleTimeout:       cfg.HTTPIdleTimeout,
+		WriteTimeout:      cfg.HTTPWriteTimeout,
 	}
 
 	go func() {
@@ -41,10 +51,10 @@ func main() {
 		}
 	}()
 
-	log.Printf("filament-tracker started on %s", addr)
+	log.Printf("filament-tracker started on %s (env=%s)", addr, cfg.AppEnv)
 	<-ctx.Done()
 
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.HTTPShutdownTimeout)
 	defer cancel()
 	if err := server.Shutdown(shutdownCtx); err != nil {
 		fmt.Fprintf(os.Stderr, "graceful shutdown failed: %v\n", err)
