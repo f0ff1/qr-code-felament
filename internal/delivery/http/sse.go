@@ -24,6 +24,7 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 			return
 		}
 
+		siteID := activeSiteID(r.Context())
 		ch := service.Subscribe()
 		defer service.Unsubscribe(ch)
 
@@ -32,6 +33,9 @@ func NewSSEHandler(service *notificationusecase.Service) http.HandlerFunc {
 			case <-r.Context().Done():
 				return
 			case evt := <-ch:
+				if !eventMatchesSite(evt.Payload, siteID) {
+					continue
+				}
 				_, _ = fmt.Fprintf(w, "data: %s\n\n", toJSON(evt))
 				flusher.Flush()
 			case <-time.After(15 * time.Second):

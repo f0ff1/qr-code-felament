@@ -25,8 +25,12 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			siteID := activeSiteID(r.Context())
 			payload := make([]map[string]any, 0, len(jobs))
 			for _, job := range jobs {
+				if !sameSite(job.SiteID, siteID) {
+					continue
+				}
 				item := map[string]any{
 					"id":                     job.ID.String(),
 					"printer_id":             job.PrinterID.String(),
@@ -45,6 +49,7 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 					"estimated_duration_sec": job.EstimatedDurationSec,
 					"layer_current":          job.LayerCurrent,
 					"layer_total":            job.LayerTotal,
+					"site_id":                job.SiteID.String(),
 				}
 				if job.ProductID != uuid.Nil {
 					item["product_id"] = job.ProductID.String()
@@ -57,6 +62,9 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(payload)
 		case http.MethodPost:
+			if !requireWritable(w, r) {
+				return
+			}
 			var input struct {
 				PrinterID string `json:"printerId"`
 				ProductID string `json:"productId"`
@@ -81,18 +89,27 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, "invalid spool id", http.StatusBadRequest)
 				return
 			}
+			printer, err := app.PrinterService.GetByID(context.Background(), printerID)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if !sameSite(printer.SiteID, activeSiteID(r.Context())) {
+				jsonError(w, "принтер другого склада", http.StatusForbidden)
+				return
+			}
 			job, err := printJobService.Start(context.Background(), printerID, productID, spoolID)
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("print_started", "Задача печати запущена", map[string]any{"job_id": job.ID.String(), "status": string(job.Status)})
+			notifier.Publish("print_started", "Задача печати запущена", withSitePayload(map[string]any{"job_id": job.ID.String(), "status": string(job.Status)}, job.SiteID))
 			if printjobusecase.NeedsFilamentTopUp(job) {
-				notifier.Publish("filament_short", "На катушке не хватает пластика — догрузите во время печати", map[string]any{
+				notifier.Publish("filament_short", "На катушке не хватает пластика — догрузите во время печати", withSitePayload(map[string]any{
 					"job_id":           job.ID.String(),
 					"estimated_weight": job.EstimatedWeight,
 					"consumed_weight":  job.ConsumedWeight,
-				})
+				}, job.SiteID))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
@@ -108,12 +125,30 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		}
 	})
 	mux.HandleFunc("/api/print-jobs/", func(w http.ResponseWriter, r *http.Request) {
+		if !requireWritable(w, r) {
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/print-jobs/")
 		parts := strings.Split(path, "/")
+		ensureJobSite := func(id uuid.UUID) bool {
+			job, err := printJobService.GetByID(context.Background(), id)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return false
+			}
+			if !sameSite(job.SiteID, activeSiteID(r.Context())) {
+				jsonError(w, "задача другого склада", http.StatusForbidden)
+				return false
+			}
+			return true
+		}
 		if len(parts) == 2 && parts[1] == "confirm" && r.Method == http.MethodPost {
 			id, err := uuid.Parse(parts[0])
 			if err != nil {
 				jsonError(w, "invalid job id", http.StatusBadRequest)
+				return
+			}
+			if !ensureJobSite(id) {
 				return
 			}
 			var input struct {
@@ -139,13 +174,13 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("print_started", "Черновик печати подтверждён", map[string]any{"job_id": job.ID.String()})
+			notifier.Publish("print_started", "Черновик печати подтверждён", withSitePayload(map[string]any{"job_id": job.ID.String()}, job.SiteID))
 			if printjobusecase.NeedsFilamentTopUp(job) {
-				notifier.Publish("filament_short", "На катушке не хватает пластика — догрузите во время печати", map[string]any{
+				notifier.Publish("filament_short", "На катушке не хватает пластика — догрузите во время печати", withSitePayload(map[string]any{
 					"job_id":           job.ID.String(),
 					"estimated_weight": job.EstimatedWeight,
 					"consumed_weight":  job.ConsumedWeight,
-				})
+				}, job.SiteID))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -163,6 +198,9 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 					jsonError(w, "invalid job id", http.StatusBadRequest)
 					return
 				}
+				if !ensureJobSite(id) {
+					return
+				}
 				if err := printJobService.Delete(context.Background(), id); err != nil {
 					jsonError(w, err.Error(), http.StatusBadRequest)
 					return
@@ -176,6 +214,9 @@ func registerPrintJobRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		id, err := uuid.Parse(parts[0])
 		if err != nil {
 			jsonError(w, "invalid job id", http.StatusBadRequest)
+			return
+		}
+		if !ensureJobSite(id) {
 			return
 		}
 		switch parts[1] {

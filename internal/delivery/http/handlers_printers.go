@@ -47,13 +47,20 @@ func registerPrinterRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			siteID := activeSiteID(r.Context())
 			payload := make([]map[string]any, 0, len(printers))
 			for _, printer := range printers {
+				if !sameSite(printer.SiteID, siteID) {
+					continue
+				}
 				payload = append(payload, printerJSON(printer))
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(payload)
 		case http.MethodPost:
+			if !requireWritable(w, r) {
+				return
+			}
 			var input struct {
 				Name            string `json:"name"`
 				Model           string `json:"model"`
@@ -74,6 +81,7 @@ func registerPrinterRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				return
 			}
 			createInput := printerusecase.CreateInput{
+				SiteID:          activeSiteID(r.Context()),
 				Name:            input.Name,
 				Model:           input.Model,
 				LANHost:         input.LANHost,
@@ -100,7 +108,7 @@ func registerPrinterRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("printer_created", "Printer registered", map[string]any{"printer_id": result.ID.String(), "status": string(result.Status)})
+			notifier.Publish("printer_created", "Printer registered", withSitePayload(map[string]any{"printer_id": result.ID.String(), "status": string(result.Status)}, result.SiteID))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(printerJSON(result))
@@ -109,12 +117,30 @@ func registerPrinterRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		}
 	})
 	mux.HandleFunc("/api/printers/", func(w http.ResponseWriter, r *http.Request) {
+		if !requireWritable(w, r) {
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/printers/")
+		ensurePrinterSite := func(id uuid.UUID) bool {
+			entity, err := printerService.GetByID(context.Background(), id)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return false
+			}
+			if !sameSite(entity.SiteID, activeSiteID(r.Context())) {
+				jsonError(w, "принтер другого склада", http.StatusForbidden)
+				return false
+			}
+			return true
+		}
 		if strings.HasSuffix(path, "/cloud/verify") && r.Method == http.MethodPost {
 			idString := strings.TrimSuffix(path, "/cloud/verify")
 			id, err := uuid.Parse(idString)
 			if err != nil {
 				jsonError(w, "invalid printer id", http.StatusBadRequest)
+				return
+			}
+			if !ensurePrinterSite(id) {
 				return
 			}
 			var input struct {
@@ -138,6 +164,9 @@ func registerPrinterRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			id, err := uuid.Parse(idString)
 			if err != nil {
 				jsonError(w, "invalid printer id", http.StatusBadRequest)
+				return
+			}
+			if !ensurePrinterSite(id) {
 				return
 			}
 			var input struct {
@@ -197,6 +226,9 @@ func registerPrinterRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		id, err := uuid.Parse(path)
 		if err != nil {
 			jsonError(w, "invalid printer id", http.StatusBadRequest)
+			return
+		}
+		if !ensurePrinterSite(id) {
 			return
 		}
 		if err := printerService.Delete(context.Background(), id); err != nil {

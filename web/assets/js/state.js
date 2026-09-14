@@ -21,6 +21,7 @@ export const state = {
   username: '',
   role: '',
   isAdmin: false,
+  canWrite: false,
   activeSiteId: '',
   siteIds: [],
   sites: [],

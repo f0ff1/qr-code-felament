@@ -30,6 +30,7 @@ type CloudAccountRepository interface {
 }
 
 type CreateInput struct {
+	SiteID          uuid.UUID
 	Name            string
 	Model           string
 	LANHost         string
@@ -91,7 +92,7 @@ func (s *Service) Create(ctx context.Context, input CreateInput) (printerdomain.
 		return printerdomain.Printer{}, err
 	}
 
-	p := printerdomain.NewPrinter(strings.TrimSpace(input.Name), strings.TrimSpace(input.Model))
+	p := printerdomain.NewPrinterForSite(input.SiteID, strings.TrimSpace(input.Name), strings.TrimSpace(input.Model))
 	s.applyConnection(&p, input)
 
 	if p.CloudEnabled {
@@ -156,6 +157,7 @@ func (s *Service) UpdateLAN(ctx context.Context, id uuid.UUID, input CreateInput
 }
 
 type CloudSyncInput struct {
+	SiteID     uuid.UUID
 	Email      string
 	Password   string
 	Region     string
@@ -263,7 +265,7 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			name = device.Serial
 		}
 
-		if p, ok := bySerial[key]; ok {
+		if p, ok := bySerial[key]; ok && (input.SiteID == uuid.Nil || p.SiteID == uuid.Nil || p.SiteID == input.SiteID) {
 			p.Name = name
 			p.Model = model
 			p.LANSerial = device.Serial
@@ -292,7 +294,7 @@ func (s *Service) SyncFromCloud(ctx context.Context, input CloudSyncInput) (Clou
 			continue
 		}
 
-		p := printerdomain.NewPrinter(name, model)
+		p := printerdomain.NewPrinterForSite(input.SiteID, name, model)
 		p.LANSerial = device.Serial
 		p.LANAccessCode = device.AccessCode
 		p.CloudEnabled = true

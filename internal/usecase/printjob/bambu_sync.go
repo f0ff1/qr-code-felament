@@ -242,7 +242,7 @@ func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Pri
 		estimated = estimateWeight(snap.RemainingMin, snap.Progress)
 	}
 	if productID == uuid.Nil {
-		createdProduct, err := s.autoCreateProduct(ctx, snap, spoolID, estimated)
+		createdProduct, err := s.autoCreateProduct(ctx, printer.SiteID, snap, spoolID, estimated)
 		if err != nil {
 			return printjobdomain.PrintJob{}, err
 		}
@@ -265,6 +265,7 @@ func (s *Service) createFromBambu(ctx context.Context, printer printerdomain.Pri
 
 	job := printjobdomain.PrintJob{
 		ID:                   uuid.New(),
+		SiteID:               printer.SiteID,
 		PrinterID:            printer.ID,
 		ProductID:            productID,
 		SpoolID:              spoolID,
@@ -342,7 +343,7 @@ func sanitizeUTF8(raw string) string {
 	return strings.ToValidUTF8(raw, "")
 }
 
-func (s *Service) autoCreateProduct(ctx context.Context, snap BambuSnapshot, spoolID uuid.UUID, estimated int) (productdomain.Product, error) {
+func (s *Service) autoCreateProduct(ctx context.Context, siteID uuid.UUID, snap BambuSnapshot, spoolID uuid.UUID, estimated int) (productdomain.Product, error) {
 	material, _ := parseFilamentHint(snap.MaterialHint, snap.BrandHint)
 	if material == "" {
 		material = "PLA"
@@ -362,6 +363,9 @@ func (s *Service) autoCreateProduct(ctx context.Context, snap BambuSnapshot, spo
 	if spoolID != uuid.Nil {
 		if spoolEntity, err := s.spoolRepo.GetByID(ctx, spoolID); err == nil {
 			pricePerKg = spoolEntity.Price
+			if siteID == uuid.Nil {
+				siteID = spoolEntity.SiteID
+			}
 		}
 	}
 	hours := float64(durationSec) / 3600.0
@@ -381,6 +385,7 @@ func (s *Service) autoCreateProduct(ctx context.Context, snap BambuSnapshot, spo
 		pricePerson,
 		priceLegal,
 	)
+	product.SiteID = siteID
 	if err := s.productRepo.Create(ctx, product); err != nil {
 		return productdomain.Product{}, err
 	}
@@ -453,7 +458,7 @@ func (s *Service) ensureDraftLinked(ctx context.Context, job *printjobdomain.Pri
 		productID = job.ProductID
 	}
 	if productID == uuid.Nil {
-		createdProduct, err := s.autoCreateProduct(ctx, snap, spoolID, job.EstimatedWeight)
+		createdProduct, err := s.autoCreateProduct(ctx, printer.SiteID, snap, spoolID, job.EstimatedWeight)
 		if err != nil {
 			return false, err
 		}

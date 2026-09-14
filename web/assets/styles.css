@@ -272,8 +272,10 @@ p {
 
 .admin-users-table {
   width: 100%;
-  border-collapse: collapse;
-  min-width: 680px;
+  border-collapse: separate;
+  border-spacing: 0;
+  table-layout: fixed;
+  min-width: 720px;
 }
 
 .admin-users-table th,
@@ -281,8 +283,19 @@ p {
   padding: 12px 14px;
   text-align: left;
   border-bottom: 1px solid var(--border);
-  vertical-align: middle;
+  vertical-align: top;
 }
+
+.admin-users-table th:nth-child(1),
+.admin-users-table td:nth-child(1) { width: 28%; }
+.admin-users-table th:nth-child(2),
+.admin-users-table td:nth-child(2) { width: 12%; }
+.admin-users-table th:nth-child(3),
+.admin-users-table td:nth-child(3) { width: 18%; }
+.admin-users-table th:nth-child(4),
+.admin-users-table td:nth-child(4) { width: 12%; }
+.admin-users-table th:nth-child(5),
+.admin-users-table td:nth-child(5) { width: 30%; }
 
 .admin-users-table th {
   color: var(--muted);
@@ -330,8 +343,20 @@ p {
 .admin-user-actions {
   display: flex;
   gap: 8px;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   justify-content: flex-end;
+  white-space: nowrap;
+}
+
+body.role-viewer [data-write-only] {
+  display: none !important;
+}
+
+body.role-viewer [data-delete-id],
+body.role-viewer [data-edit-spool-id],
+body.role-viewer [data-confirm-draft-id],
+body.role-viewer [data-toggle-job] {
+  display: none !important;
 }
 
 .admin-users-pager {

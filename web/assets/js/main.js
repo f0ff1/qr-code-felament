@@ -1,6 +1,6 @@
 import { state, refs } from './state.js';
 import { refreshDerivedState } from './derived.js';
-import { loadData, loadJobsFast } from './data.js';
+import { loadData, loadJobsFast, loadFilamentCatalog, renderAll } from './data.js';
 import { renderSummary } from './render-summary.js';
 import { renderOverview } from './render-overview.js';
 import { renderSpools } from './render-spools.js';
@@ -29,8 +29,7 @@ import {
 } from './cloud.js';
 import { ensureAuthenticated, submitLogin, logout, submitForgotPassword } from './auth.js';
 import { connectEvents, loadNotificationHistory } from './events.js';
-import { loadFilamentCatalog } from './data.js';
-import { bindAdminEvents, loadSitesForAdmin, refreshAdminUsersCache } from './admin.js';
+import { bindAdminEvents, loadSitesForAdmin, refreshAdminUsersCache, syncAdminNav } from './admin.js';
 
 function bindEvents() {
   // Local UI tick: progress/status without hitting the network.
@@ -155,6 +154,8 @@ function bindEvents() {
         const isActive = panel.dataset.viewPanel === view;
         panel.classList.toggle('hidden', !isActive);
       });
+      syncAdminNav();
+      renderAll();
       if (view === 'admin') {
         loadSitesForAdmin();
         refreshAdminUsersCache();
@@ -202,12 +203,14 @@ function init() {
     connectEvents();
     refreshCloudAccountBadge();
     loadFilamentCatalog();
+    // Dashboard first — don't block on admin lists
+    await loadData();
+    renderAll();
     loadNotificationHistory();
-    await loadSitesForAdmin();
+    loadSitesForAdmin().catch(() => {});
     if (state.isAdmin) {
-      await refreshAdminUsersCache();
+      refreshAdminUsersCache().catch(() => {});
     }
-    loadData();
   });
 }
 

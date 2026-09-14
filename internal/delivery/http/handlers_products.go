@@ -25,8 +25,12 @@ func registerProductRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			siteID := activeSiteID(r.Context())
 			payload := make([]map[string]any, 0, len(products))
 			for _, product := range products {
+				if !sameSite(product.SiteID, siteID) {
+					continue
+				}
 				payload = append(payload, map[string]any{
 					"id":                   product.ID.String(),
 					"name":                 product.Name,
@@ -37,11 +41,15 @@ func registerProductRoutes(mux *http.ServeMux, app *bootstrap.App) {
 					"price":                product.Price,
 					"price_legal":          product.PriceLegal,
 					"billing_mode":         string(product.BillingMode),
+					"site_id":              product.SiteID.String(),
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(payload)
 		case http.MethodPost:
+			if !requireWritable(w, r) {
+				return
+			}
 			var input struct {
 				Name               string  `json:"name"`
 				Description        string  `json:"description"`
@@ -61,12 +69,13 @@ func registerProductRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, "invalid duration", http.StatusBadRequest)
 				return
 			}
-			entity, err := productService.Create(context.Background(), input.Name, input.Description, input.Material, input.EstimatedWeight, duration, input.Price, input.PriceLegal, productdomain.BillingMode(input.BillingMode))
+			siteID := activeSiteID(r.Context())
+			entity, err := productService.CreateForSite(context.Background(), siteID, input.Name, input.Description, input.Material, input.EstimatedWeight, duration, input.Price, input.PriceLegal, productdomain.BillingMode(input.BillingMode))
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("product_created", "Product created", map[string]any{"product_id": entity.ID.String(), "material": entity.Material})
+			notifier.Publish("product_created", "Product created", withSitePayload(map[string]any{"product_id": entity.ID.String(), "material": entity.Material}, entity.SiteID))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": entity.ID.String(), "name": entity.Name})
@@ -75,6 +84,9 @@ func registerProductRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		}
 	})
 	mux.HandleFunc("/api/products/", func(w http.ResponseWriter, r *http.Request) {
+		if !requireWritable(w, r) {
+			return
+		}
 		if r.Method != http.MethodDelete {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
@@ -83,6 +95,15 @@ func registerProductRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		id, err := uuid.Parse(idString)
 		if err != nil {
 			jsonError(w, "invalid product id", http.StatusBadRequest)
+			return
+		}
+		product, err := productService.GetByID(context.Background(), id)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !sameSite(product.SiteID, activeSiteID(r.Context())) {
+			jsonError(w, "продукт другого склада", http.StatusForbidden)
 			return
 		}
 		if err := productService.Delete(context.Background(), id); err != nil {

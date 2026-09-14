@@ -80,7 +80,7 @@ func (s *Service) Start(ctx context.Context, printerID, productID, spoolID uuid.
 		return printjobdomain.PrintJob{}, err
 	}
 
-	job := printjobdomain.NewPrintJob(printerEntity.ID, productEntity.ID, spoolEntity.ID, need)
+	job := printjobdomain.NewPrintJobForSite(printerEntity.SiteID, printerEntity.ID, productEntity.ID, spoolEntity.ID, need)
 	job.Start()
 	job.ConsumedWeight = reserved
 	job.FileName = productEntity.Name

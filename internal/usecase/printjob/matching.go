@@ -25,6 +25,9 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 	if err == nil {
 		fileKey := normalizeName(snap.FileName)
 		for _, product := range products {
+			if printer.SiteID != uuid.Nil && product.SiteID != uuid.Nil && product.SiteID != printer.SiteID {
+				continue
+			}
 			nameKey := normalizeName(product.Name)
 			if nameKey != "" && (strings.Contains(fileKey, nameKey) || strings.Contains(nameKey, fileKey)) {
 				productID = product.ID
@@ -42,6 +45,9 @@ func (s *Service) matchResources(ctx context.Context, printer printerdomain.Prin
 		var bestID uuid.UUID
 		bestScore := -1
 		for _, spool := range spools {
+			if printer.SiteID != uuid.Nil && spool.SiteID != uuid.Nil && spool.SiteID != printer.SiteID {
+				continue
+			}
 			if spool.CurrentWeight <= 0 {
 				continue
 			}

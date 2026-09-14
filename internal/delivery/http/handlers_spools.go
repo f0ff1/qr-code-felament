@@ -8,6 +8,7 @@ import (
 
 	"filamenttracker/internal/bootstrap"
 	"filamenttracker/internal/domain/filament"
+	printjobdomain "filamenttracker/internal/domain/printjob"
 	spooldomain "filamenttracker/internal/domain/spool"
 	spoolusecase "filamenttracker/internal/usecase/spool"
 
@@ -32,9 +33,17 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jobs, jobsErr := printJobService.List(context.Background())
 			if jobsErr != nil {
 				jobs = nil
+			} else if siteID != uuid.Nil {
+				filtered := make([]printjobdomain.PrintJob, 0, len(jobs))
+				for _, job := range jobs {
+					if sameSite(job.SiteID, siteID) {
+						filtered = append(filtered, job)
+					}
+				}
+				jobs = filtered
 			}
 			for _, spool := range spools {
-				if siteID != uuid.Nil && spool.SiteID != uuid.Nil && spool.SiteID != siteID {
+				if !sameSite(spool.SiteID, siteID) {
 					continue
 				}
 				future := spool.CurrentWeight
@@ -53,11 +62,15 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 					"price":             spool.Price,
 					"status":            string(spool.Status),
 					"qr_token":          spool.QRToken,
+					"site_id":           spool.SiteID.String(),
 				})
 			}
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(payload)
 		case http.MethodPost:
+			if !requireWritable(w, r) {
+				return
+			}
 			var input struct {
 				Material      string  `json:"material"`
 				Color         string  `json:"color"`
@@ -85,12 +98,13 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, "некорректный вес или цена", http.StatusBadRequest)
 				return
 			}
-			entity, err := spoolService.CreateForSite(r.Context(), activeSiteID(r.Context()), spooldomain.Material(input.Material), input.Color, input.Manufacturer, input.InitialWeight, input.Price)
+			siteID := activeSiteID(r.Context())
+			entity, err := spoolService.CreateForSite(r.Context(), siteID, spooldomain.Material(input.Material), input.Color, input.Manufacturer, input.InitialWeight, input.Price)
 			if err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
-			notifier.Publish("spool_created", "New spool created", map[string]any{"spool_id": entity.ID.String(), "status": string(entity.Status)})
+			notifier.Publish("spool_created", "New spool created", withSitePayload(map[string]any{"spool_id": entity.ID.String(), "status": string(entity.Status)}, entity.SiteID))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusCreated)
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": entity.ID.String(), "qr_token": entity.QRToken})
@@ -99,6 +113,9 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		}
 	})
 	mux.HandleFunc("/api/spools/", func(w http.ResponseWriter, r *http.Request) {
+		if !requireWritable(w, r) {
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/api/spools/")
 		if strings.HasSuffix(path, "/weight") {
 			if r.Method != http.MethodPatch {
@@ -118,6 +135,15 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				jsonError(w, "invalid payload", http.StatusBadRequest)
 				return
 			}
+			spool, err := spoolService.GetByID(context.Background(), id)
+			if err != nil {
+				jsonError(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if !sameSite(spool.SiteID, activeSiteID(r.Context())) {
+				jsonError(w, "катушка другого склада", http.StatusForbidden)
+				return
+			}
 			if err := spoolService.UpdateRemaining(context.Background(), id, input.RemainingWeight); err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
@@ -132,6 +158,15 @@ func registerSpoolRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		id, err := uuid.Parse(path)
 		if err != nil {
 			jsonError(w, "invalid spool id", http.StatusBadRequest)
+			return
+		}
+		spool, err := spoolService.GetByID(context.Background(), id)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !sameSite(spool.SiteID, activeSiteID(r.Context())) {
+			jsonError(w, "катушка другого склада", http.StatusForbidden)
 			return
 		}
 		if err := spoolService.Delete(context.Background(), id); err != nil {

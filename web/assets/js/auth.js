@@ -1,9 +1,9 @@
 import { state } from './state.js';
 import { fetchJSON, setUnauthorizedHandler } from './api.js';
-import { loadAppConfig, loadData, loadFilamentCatalog } from './data.js';
+import { loadAppConfig, loadData, loadFilamentCatalog, renderAll } from './data.js';
 import { connectEvents, loadNotificationHistory } from './events.js';
 import { refreshCloudAccountBadge } from './cloud.js';
-import { syncAdminNav } from './admin.js';
+import { syncAdminNav, loadSitesForAdmin, refreshAdminUsersCache } from './admin.js';
 
 export function showLoginOverlay(visible) {
   const overlay = document.getElementById('loginOverlay');
@@ -22,6 +22,7 @@ export function applySession(me) {
   state.username = me?.username || '';
   state.role = me?.role || '';
   state.isAdmin = Boolean(me?.is_admin);
+  state.canWrite = state.authenticated && state.role !== 'viewer';
   state.activeSiteId = me?.active_site_id || '';
   state.siteIds = Array.isArray(me?.site_ids) ? me.site_ids : [];
   updateAuthChrome();
@@ -82,6 +83,11 @@ export async function submitLogin(event) {
     loadFilamentCatalog();
     loadNotificationHistory();
     await loadData();
+    renderAll();
+    loadSitesForAdmin().catch(() => {});
+    if (state.isAdmin) {
+      refreshAdminUsersCache().catch(() => {});
+    }
   } catch (error) {
     if (errorEl) errorEl.textContent = error.message || 'Неверный логин или пароль';
   }
@@ -118,6 +124,7 @@ export async function logout() {
   state.username = '';
   state.role = '';
   state.isAdmin = false;
+  state.canWrite = false;
   updateAuthChrome();
   syncAdminNav();
   showLoginOverlay(true);

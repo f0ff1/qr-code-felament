@@ -31,6 +31,10 @@ func NewService(repo ProductRepository) *Service {
 }
 
 func (s *Service) Create(ctx context.Context, name, description, material string, estimatedWeight int, estimatedPrintTime time.Duration, price float64, priceLegal float64, billingMode productdomain.BillingMode) (productdomain.Product, error) {
+	return s.CreateForSite(ctx, uuid.Nil, name, description, material, estimatedWeight, estimatedPrintTime, price, priceLegal, billingMode)
+}
+
+func (s *Service) CreateForSite(ctx context.Context, siteID uuid.UUID, name, description, material string, estimatedWeight int, estimatedPrintTime time.Duration, price float64, priceLegal float64, billingMode productdomain.BillingMode) (productdomain.Product, error) {
 	if name == "" || material == "" || estimatedWeight <= 0 {
 		return productdomain.Product{}, fmt.Errorf("%w: invalid product input", domain.ErrInvalid)
 	}
@@ -48,6 +52,7 @@ func (s *Service) Create(ctx context.Context, name, description, material string
 	}
 
 	p := productdomain.NewProduct(name, description, material, estimatedWeight, estimatedPrintTime, price)
+	p.SiteID = siteID
 	p.PriceLegal = priceLegal
 	p.BillingMode = billingMode
 	if err := s.repo.Create(ctx, p); err != nil {

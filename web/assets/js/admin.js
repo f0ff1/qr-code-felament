@@ -6,7 +6,12 @@ import { loadData } from './data.js';
 const USERS_PER_PAGE = 12;
 
 export function syncAdminNav() {
+  const onAdminView = document.querySelector('.nav-item.active')?.dataset.view === 'admin';
   document.querySelectorAll('[data-admin-only]').forEach((el) => {
+    if (el.classList.contains('view-panel') || el.matches('[data-view-panel="admin"]')) {
+      el.classList.toggle('hidden', !state.isAdmin || !onAdminView);
+      return;
+    }
     el.classList.toggle('hidden', !state.isAdmin);
   });
   const siteField = document.getElementById('activeSiteField');
@@ -17,6 +22,20 @@ export function syncAdminNav() {
   if (card) {
     card.classList.toggle('is-authenticated', Boolean(state.authenticated));
   }
+  syncWriteAccess();
+}
+
+export function syncWriteAccess() {
+  const canWrite = Boolean(state.authenticated) && state.role !== 'viewer';
+  document.body.classList.toggle('role-viewer', state.role === 'viewer');
+  document.querySelectorAll('[data-write-only]').forEach((el) => {
+    el.classList.toggle('hidden', !canWrite);
+  });
+  document.querySelectorAll('[data-write-disable]').forEach((el) => {
+    if ('disabled' in el) {
+      el.disabled = !canWrite;
+    }
+  });
 }
 
 async function copyText(text) {

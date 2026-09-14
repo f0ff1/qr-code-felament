@@ -177,6 +177,7 @@ func (s *Scheduler) publishSpoolLow(spool spooldomain.Spool, label string) {
 	s.lowAlerted[id] = true
 	s.notifier.Publish("spool_low", fmt.Sprintf("Катушка %s заканчивается (%d г)", label, spool.CurrentWeight), map[string]any{
 		"spool_id":       id,
+		"site_id":        spool.SiteID.String(),
 		"current_weight": spool.CurrentWeight,
 		"material":       string(spool.Material),
 		"color":          spool.Color,
@@ -191,6 +192,7 @@ func (s *Scheduler) publishSpoolEmpty(spool spooldomain.Spool, label string) {
 	s.emptyAlerted[id] = true
 	s.notifier.Publish("spool_empty", fmt.Sprintf("Катушка %s закончилась", label), map[string]any{
 		"spool_id": id,
+		"site_id":  spool.SiteID.String(),
 		"material": string(spool.Material),
 		"color":    spool.Color,
 	})

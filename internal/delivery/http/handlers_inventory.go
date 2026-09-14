@@ -29,6 +29,33 @@ func registerInventoryRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		// Prefer site-scoped spool totals when session has an active site.
+		siteID := activeSiteID(r.Context())
+		if siteID != uuid.Nil {
+			spools, err := spoolService.List(context.Background())
+			if err == nil {
+				type key struct{ material, color string }
+				totals := map[key]int{}
+				for _, spool := range spools {
+					if !sameSite(spool.SiteID, siteID) {
+						continue
+					}
+					k := key{material: string(spool.Material), color: spool.Color}
+					totals[k] += spool.CurrentWeight
+				}
+				payload := make([]map[string]any, 0, len(totals))
+				for k, total := range totals {
+					payload = append(payload, map[string]any{
+						"material": k.material,
+						"color":    k.color,
+						"total":    total,
+					})
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_ = json.NewEncoder(w).Encode(map[string]any{"items": payload})
+				return
+			}
+		}
 		payload := make([]map[string]any, 0, len(summary))
 		for _, item := range summary {
 			payload = append(payload, map[string]any{
@@ -70,6 +97,9 @@ func registerInventoryRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !requireWritable(w, r) {
+			return
+		}
 		var input struct {
 			SpoolID string `json:"spoolId"`
 			Weight  int    `json:"weight"`
@@ -81,6 +111,15 @@ func registerInventoryRoutes(mux *http.ServeMux, app *bootstrap.App) {
 		spoolID, err := uuid.Parse(input.SpoolID)
 		if err != nil {
 			jsonError(w, "invalid spool id", http.StatusBadRequest)
+			return
+		}
+		spool, err := spoolService.GetByID(context.Background(), spoolID)
+		if err != nil {
+			jsonError(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !sameSite(spool.SiteID, activeSiteID(r.Context())) {
+			jsonError(w, "катушка другого склада", http.StatusForbidden)
 			return
 		}
 		if err := inventoryService.RecordConsumption(context.Background(), spoolID, input.Weight); err != nil {
@@ -108,8 +147,12 @@ func registerInventoryRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jsonError(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		siteID := activeSiteID(r.Context())
 		availableWeight := 0
 		for _, spool := range spools {
+			if !sameSite(spool.SiteID, siteID) {
+				continue
+			}
 			availableWeight += spool.CurrentWeight
 		}
 		missing := forecastService.EstimateRequiredWeight(availableWeight, requiredWeight)
@@ -134,10 +177,14 @@ func registerInventoryRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		siteID := activeSiteID(r.Context())
 		items := notifier.ListRecent(50)
 		payload := make([]map[string]any, 0, len(items))
 		for i := len(items) - 1; i >= 0; i-- {
 			evt := items[i]
+			if !eventMatchesSite(evt.Payload, siteID) {
+				continue
+			}
 			payload = append(payload, map[string]any{
 				"id":         evt.ID,
 				"type":       evt.Type,

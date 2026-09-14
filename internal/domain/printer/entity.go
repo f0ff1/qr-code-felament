@@ -50,9 +50,16 @@ type Printer struct {
 }
 
 func NewPrinter(name, model string) Printer {
+	return NewPrinterForSite(org.DefaultSiteID, name, model)
+}
+
+func NewPrinterForSite(siteID uuid.UUID, name, model string) Printer {
+	if siteID == uuid.Nil {
+		siteID = org.DefaultSiteID
+	}
 	return Printer{
 		ID:          uuid.New(),
-		SiteID:      org.DefaultSiteID,
+		SiteID:      siteID,
 		Name:        name,
 		Model:       model,
 		Status:      StatusIdle,

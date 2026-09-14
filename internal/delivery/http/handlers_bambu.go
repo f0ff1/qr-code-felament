@@ -31,12 +31,15 @@ func registerBambuRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				"region": account.Region,
 			})
 		case http.MethodDelete:
+			if !requireWritable(w, r) {
+				return
+			}
 			if err := printerService.LogoutCloud(context.Background()); err != nil {
 				jsonError(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			bambuMonitor.ResetCloudSessions()
-			notifier.Publish("bambu_cloud_logout", "Вы вышли из Bambu Cloud", map[string]any{})
+			notifier.Publish("bambu_cloud_logout", "Вы вышли из Bambu Cloud", withSitePayload(map[string]any{}, activeSiteID(r.Context())))
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]any{"linked": false})
 		default:
@@ -47,6 +50,9 @@ func registerBambuRoutes(mux *http.ServeMux, app *bootstrap.App) {
 	mux.HandleFunc("/api/bambu/cloud/resend-code", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !requireWritable(w, r) {
 			return
 		}
 		var input struct {
@@ -89,6 +95,9 @@ func registerBambuRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jsonError(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		if !requireWritable(w, r) {
+			return
+		}
 		var input struct {
 			Email      string `json:"email"`
 			Password   string `json:"password"`
@@ -100,7 +109,9 @@ func registerBambuRoutes(mux *http.ServeMux, app *bootstrap.App) {
 			jsonError(w, "invalid payload", http.StatusBadRequest)
 			return
 		}
+		siteID := activeSiteID(r.Context())
 		result, err := printerService.SyncFromCloud(context.Background(), printerusecase.CloudSyncInput{
+			SiteID:     siteID,
 			Email:      input.Email,
 			Password:   input.Password,
 			Region:     input.Region,
@@ -125,6 +136,9 @@ func registerBambuRoutes(mux *http.ServeMux, app *bootstrap.App) {
 
 		printers := make([]map[string]any, 0, len(result.Printers))
 		for _, p := range result.Printers {
+			if !sameSite(p.SiteID, siteID) {
+				continue
+			}
 			printers = append(printers, printerJSON(p))
 		}
 		devices := make([]map[string]any, 0, len(result.Devices))
@@ -137,15 +151,15 @@ func registerBambuRoutes(mux *http.ServeMux, app *bootstrap.App) {
 				"print_status": d.PrintStatus,
 			})
 		}
-		notifier.Publish("bambu_cloud_synced", "Принтеры синхронизированы из Bambu Cloud", map[string]any{
-			"count": len(result.Printers),
-		})
+		notifier.Publish("bambu_cloud_synced", "Принтеры синхронизированы из Bambu Cloud", withSitePayload(map[string]any{
+			"count": len(printers),
+		}, siteID))
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"needs_verification": false,
 			"printers":           printers,
 			"devices":            devices,
-			"count":              len(result.Printers),
+			"count":              len(printers),
 		})
 	})
 }
